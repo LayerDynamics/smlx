@@ -1,0 +1,53 @@
+# MANIFEST.in - Controls what files are included in source distributions
+# https://packaging.python.org/guides/using-manifest-in/
+
+# Include essential project files
+include README.md
+include LICENSE
+include pyproject.toml
+include setup.py
+include environment.yml
+include pytest.ini
+
+# Include package data
+recursive-include smlx *.py
+recursive-include smlx *.typed
+recursive-include smlx py.typed
+
+# Include tests (users may want to run them)
+recursive-include tests *.py
+
+# Exclude resources directory (reference code only, not for distribution)
+prune resources
+
+# Exclude development/build artifacts
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude *.dylib
+
+# Exclude version control
+recursive-exclude * .git*
+recursive-exclude * .hg*
+recursive-exclude * .svn*
+
+# Exclude IDE files
+recursive-exclude * .vscode
+recursive-exclude * .idea
+recursive-exclude * *.swp
+recursive-exclude * *.swo
+recursive-exclude * *~
+
+# Exclude build artifacts
+prune build
+prune dist
+prune *.egg-info
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache
+prune htmlcov
+
+# Add model weights or config files here as needed
+# include smlx/models/configs/*.json
+# include smlx/models/weights/*.safetensors

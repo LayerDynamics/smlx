@@ -1,0 +1,105 @@
+# Conda environment for SMLX development
+# Create environment: conda env create -f environment.yml
+# Update environment: conda env update -f environment.yml --prune
+# Activate environment: conda activate smlx
+
+name: smlx
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python version
+  - python>=3.9,<3.13
+
+  # Core data science dependencies
+  - numpy>=1.24.0
+  - scipy>=1.11.0
+  - pillow>=10.0.0
+
+  # ML/DL dependencies
+  - transformers>=4.40.0
+  - tokenizers>=0.15.0
+
+  # Utilities
+  - tqdm>=4.66.0
+  - requests>=2.31.0
+  - pyyaml>=6.0
+
+  # Add more core dependencies here as needed
+
+  # Development tools
+  - pytest>=7.4.0
+  - pytest-cov>=4.1.0
+  - pytest-xdist>=3.3.0
+  - black>=23.0.0
+  - ruff>=0.1.0
+  - mypy>=1.5.0
+  - ipython>=8.12.0
+  - jupyter>=1.0.0
+
+  # Evaluation dependencies (uncomment when implementing evals)
+  # - datasets>=2.14.0          # HuggingFace datasets for benchmarking
+  # - evaluate>=0.4.0           # Evaluation metrics
+  # - pandas>=2.0.0             # Data analysis for eval results
+
+  # Server dependencies (uncomment when implementing server)
+  # - fastapi>=0.100.0          # Modern web framework
+  # - uvicorn>=0.23.0           # ASGI server
+  # - pydantic>=2.0.0           # Data validation
+  # - python-multipart>=0.0.6   # Form data parsing
+
+  # Vision dependencies (uncomment when implementing vision models)
+  # - opencv>=4.8.0             # Computer vision operations
+  # - scikit-image>=0.21.0      # Image processing algorithms
+
+  # Audio dependencies (uncomment when implementing audio models)
+  # - librosa>=0.10.0           # Audio analysis
+  # - soundfile>=0.12.0         # Audio I/O
+  # - pydub>=0.25.0             # Audio manipulation
+
+  # Pip dependencies that are not available via conda
+  - pip:
+    # Core MLX and Apple Silicon dependencies (pip only)
+    - mlx>=0.14.0
+    - mlx-data>=0.1.0            # Efficient framework-agnostic data loading
+
+    - huggingface-hub>=0.20.0
+
+    # MLX ecosystem libraries (for reference and pattern borrowing)
+    # Language Models
+    - mlx-lm>=0.10.0              # MLX language models with LoRA/QLoRA fine-tuning
+
+    # Vision-Language Models
+    - mlx-vlm>=0.1.0              # MLX vision-language models with multi-image support
+
+    # Embeddings
+    - mlx-embedding-models>=0.0.1 # Text embeddings for BERT/RoBERTa models
+
+    # Image Generation (uncomment when implementing image generation)
+    # - mflux>=0.1.0              # FLUX models for image generation
+    # - mlx-stable-diffusion      # Stable Diffusion with LoRA support
+
+    # Audio/Speech (uncomment when implementing audio models)
+    # - mlx-whisper>=0.1.0        # Official Whisper speech recognition
+    # - lightning-whisper-mlx>=0.1.0  # 10x faster Whisper implementation
+    # - mlx-audio>=0.1.0          # TTS, STT, and STS capabilities
+
+    # RAG & Advanced NLP (uncomment when needed)
+    # - langchain>=0.1.0          # For RAG implementations
+    # - chromadb>=0.4.0           # Vector database for embeddings
+
+    # Specialized MLX libraries (uncomment as needed)
+    # - mlx3D                     # 3D computer vision with MLX
+    # - mlx-image                 # Image model utilities
+
+    # Benchmarking & Optimization (uncomment when needed)
+    # - mlx-bench                 # Benchmark MLX performance
+
+    # Add more pip-only dependencies here
+
+# Notes:
+# - Keep this file synchronized with pyproject.toml dependencies
+# - Uncomment optional dependencies as features are implemented
+# - Use 'conda env export > environment-lock.yml' to create a lock file
