@@ -64,16 +64,11 @@ def main():
     print("Moondream2 - Object Detection & Region Features")
     print("=" * 60)
 
-    # Load model (0.5b variant for "smol" constraint)
+    # Load model
     print("\n[1/5] Loading Moondream2 model...")
-    try:
-        # Try to load 0.5b variant (smaller, more suitable for "smol" constraint)
-        model, tokenizer = load("vikhyatk/moondream-0_5b-int8", variant="0.5b")
-        print("✓ Moondream2-0.5B loaded successfully!")
-    except Exception as e:
-        print(f"⚠ Could not load from HuggingFace: {e}")
-        print("Using default configuration...")
-        model, tokenizer = load(variant="0.5b")
+    # Load standard moondream2 model
+    model, tokenizer = load("vikhyatk/moondream2")
+    print("✓ Moondream2 loaded successfully!")
 
     # Create test image
     print("\n[2/5] Creating test scene image...")

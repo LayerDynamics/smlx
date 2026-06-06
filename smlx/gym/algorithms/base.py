@@ -138,6 +138,10 @@ class RLAgent(ABC):
         self.metrics_history: list[TrainingMetrics] = []
         self.current_metrics = TrainingMetrics()
 
+        # True while _evaluate() is running. Subclasses that separate exploration
+        # from exploitation (e.g. epsilon-greedy) can check this to act greedily.
+        self.eval_mode = False
+
         # Episode statistics (for moving average)
         self._episode_returns: list[float] = []
         self._episode_lengths: list[int] = []
@@ -293,10 +297,76 @@ class RLAgent(ABC):
             f"Loss={self.current_metrics.loss:.4f}"
         )
 
-    def _evaluate(self):
-        """Run evaluation episodes."""
-        # TODO: Implement evaluation logic
-        pass
+    def _evaluate(self) -> dict[str, float]:
+        """Run greedy evaluation episodes and record the results.
+
+        Runs ``config.eval_episodes`` episodes with the current policy, performing
+        no training updates and without disturbing the training counters or the
+        moving-average windows. ``self.eval_mode`` is True for the duration so
+        subclasses that explore during training can act greedily here.
+
+        Returns:
+            Dict with ``eval_average_return``, ``eval_average_length``,
+            ``eval_success_rate`` and ``eval_episodes``.
+        """
+        num_eval = max(1, self.config.eval_episodes)
+        max_steps = self.config.max_steps_per_episode
+
+        returns: list[float] = []
+        lengths: list[int] = []
+        successes = 0
+
+        self.eval_mode = True
+        try:
+            for _ in range(num_eval):
+                observation, info = self.env.reset()
+                if not isinstance(observation, mx.array):
+                    observation = mx.array(observation)
+
+                episode_return = 0.0
+                episode_length = 0
+                done = False
+                while not done:
+                    action = self.select_action(observation)
+                    next_obs, reward, terminated, truncated, info = self.env.step(action)
+                    done = terminated or truncated
+
+                    if not isinstance(next_obs, mx.array):
+                        next_obs = mx.array(next_obs)
+
+                    episode_return += float(reward)
+                    episode_length += 1
+                    observation = next_obs
+
+                    if max_steps and episode_length >= max_steps:
+                        break
+
+                returns.append(episode_return)
+                lengths.append(episode_length)
+                if isinstance(info, dict) and info.get("success", False):
+                    successes += 1
+        finally:
+            self.eval_mode = False
+
+        eval_metrics = {
+            "eval_average_return": float(sum(returns) / len(returns)),
+            "eval_average_length": float(sum(lengths) / len(lengths)),
+            "eval_success_rate": float(successes / num_eval),
+            "eval_episodes": float(num_eval),
+        }
+
+        # Record on the current metrics so downstream consumers can read them.
+        self.current_metrics.metadata["eval"] = eval_metrics
+        self.current_metrics.success_rate = eval_metrics["eval_success_rate"]
+
+        print(
+            f"  [eval] episodes={num_eval} "
+            f"avg_return={eval_metrics['eval_average_return']:.2f} "
+            f"avg_length={eval_metrics['eval_average_length']:.1f} "
+            f"success_rate={eval_metrics['eval_success_rate']:.1%}"
+        )
+
+        return eval_metrics
 
     def save(self, path: str):
         """

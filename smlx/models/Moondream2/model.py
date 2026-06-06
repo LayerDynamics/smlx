@@ -8,6 +8,8 @@ Combines a vision encoder, Phi language model, and region modules
 for captioning, VQA, object detection, and pointing tasks.
 """
 
+import logging
+import os
 from typing import List, Optional, Tuple
 
 import mlx.core as mx
@@ -18,6 +20,18 @@ from .vision import VisionEncoder, prepare_crops, reconstruct_from_crops
 from .language import PhiModel
 from .region import DetectionHead, CoordinateDecoder
 from smlx.utils.cache import KVCache
+from smlx.utils.vlm_diagnostics import (
+    log_embedding_comparison,
+    log_logits_distribution,
+    log_vision_features,
+)
+
+logger = logging.getLogger(__name__)
+
+# Enable debug logging if SMLX_DEBUG is set
+DEBUG = os.getenv("SMLX_DEBUG", "0") == "1"
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
 
 
 class VisionProjector(nn.Module):
@@ -211,7 +225,13 @@ class Moondream2(nn.Module):
             vision_features = mx.concatenate([global_features, local_features], axis=-1)
 
         # Project to text space: [B, N, 2*hidden_size] -> [B, N, text_hidden_size]
+        if DEBUG:
+            log_vision_features(vision_features, label="moondream2_vision_features_pre_proj")
+
         vision_embeddings = self.vision_projection(vision_features)
+
+        if DEBUG:
+            log_vision_features(vision_embeddings, label="moondream2_projected_vision_embeds")
 
         return vision_embeddings
 
@@ -292,6 +312,12 @@ class Moondream2(nn.Module):
             # Prepend vision embeddings to text
             # Vision acts as a prefix to the text sequence
             B = text_embeddings.shape[0]
+
+            if DEBUG:
+                log_embedding_comparison(
+                    vision_embeddings, text_embeddings, label="moondream2_vision_vs_text_embeds"
+                )
+
             combined_embeddings = mx.concatenate(
                 [vision_embeddings, text_embeddings], axis=1
             )
@@ -327,6 +353,10 @@ class Moondream2(nn.Module):
 
         # Compute logits
         logits = self.lm_head(hidden_states)
+
+        if DEBUG:
+            # Log logits distribution for last token (used for generation)
+            log_logits_distribution(logits[:, -1, :], label="moondream2_output_logits")
 
         return logits, vision_embeddings
 

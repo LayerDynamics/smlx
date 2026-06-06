@@ -188,12 +188,13 @@ class ModelArgs(BaseModelArgs):
             self.layer_types = ["full_attention"] * self.num_hidden_layers
 
         # Configure NoPE layers (SmolLM3 feature)
-        # Every 4th layer has RoPE disabled by default
+        # Note: Standard SmolLM2-135M checkpoints (like mlx-community/SmolLM2-135M-Instruct)
+        # were NOT trained with NoPE despite the architecture supporting it.
+        # Only enable NoPE if explicitly specified in config.
         if self.no_rope_layers is None:
-            self.no_rope_layers = [
-                int((i + 1) % self.no_rope_layer_interval != 0)
-                for i in range(self.num_hidden_layers)
-            ]
+            # Don't auto-generate NoPE - use standard RoPE on all layers
+            # This matches mlx-lm behavior and ensures correct generation
+            self.no_rope_layers = [1] * self.num_hidden_layers
         elif len(self.no_rope_layers) != self.num_hidden_layers:
             raise ValueError(
                 f"`no_rope_layers` length ({len(self.no_rope_layers)}) "

@@ -24,6 +24,7 @@ import argparse
 import copy
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -367,22 +368,217 @@ def quantize_model(
     """
     logger.info(f"Quantizing model to {bits}-bit (group_size={group_size})...")
 
-    # Update config with quantization info
+    supported_bits = {2, 3, 4, 5, 6, 8}
+    if bits not in supported_bits:
+        raise ValueError(
+            f"Unsupported quantization bits: {bits}. "
+            f"Supported values are {sorted(supported_bits)}."
+        )
+    if group_size <= 0:
+        raise ValueError(f"group_size must be positive, got {group_size}")
+
+    float_dtypes = (mx.float16, mx.bfloat16, mx.float32)
+
+    quantized_weights: dict[str, mx.array] = {}
+    quantized_layers: list[str] = []
+    skipped_layers: list[str] = []
+
+    for name, tensor in weights.items():
+        # Quantize the .weight of linear/embedding-style 2D float tensors via
+        # mx.quantize, storing packed weights + scales + biases in the standard
+        # MLX checkpoint layout. Everything else (norms, biases, 1D params,
+        # already-packed tensors) is copied through unchanged.
+        prefix = name[: -len(".weight")] if name.endswith(".weight") else None
+        is_2d_float_weight = (
+            prefix is not None and tensor.ndim == 2 and tensor.dtype in float_dtypes
+        )
+        already_quantized = (
+            prefix is not None and f"{prefix}.scales" in weights
+        )
+        is_quantizable = (
+            is_2d_float_weight
+            and not already_quantized
+            and tensor.shape[-1] % group_size == 0
+            and tensor.shape[-1] >= group_size
+        )
+
+        if not is_quantizable:
+            quantized_weights[name] = tensor
+            if is_2d_float_weight and not already_quantized:
+                # A 2D float weight we could not quantize (dim not divisible by
+                # group_size) is left in full precision, like mlx-lm does.
+                skipped_layers.append(name)
+            continue
+
+        w_q, scales, biases = mx.quantize(tensor, group_size=group_size, bits=bits)
+        quantized_weights[name] = w_q
+        quantized_weights[f"{prefix}.scales"] = scales
+        quantized_weights[f"{prefix}.biases"] = biases
+        quantized_layers.append(prefix)
+
+    # Materialize the packed tensors before they are returned/saved.
+    if quantized_weights:
+        mx.eval(*quantized_weights.values())
+
+    if not quantized_layers:
+        raise ValueError(
+            "Quantization produced no quantized layers: no weight tensor was "
+            f"eligible (2D float with last dim divisible by group_size={group_size}). "
+            "Check the model architecture and group_size."
+        )
+
+    # Update config per the MLX checkpoint convention so the quantized weights
+    # can be reloaded (the loader applies quantization wherever .scales exist).
     quantized_config = copy.deepcopy(config)
     quantized_config["quantization"] = {
         "group_size": group_size,
         "bits": bits,
     }
+    quantized_config["quantization_layers"] = sorted(quantized_layers)
 
-    # For now, return weights as-is with config update
-    # Full quantization requires loading into an nn.Module
-    # This will be integrated with smlx.quant module for advanced quantization
-    logger.warning(
-        "Quantization requires model architecture. "
-        "Use smlx.quant module for post-conversion quantization."
+    logger.info(
+        f"Quantized {len(quantized_layers)} layers to {bits}-bit "
+        f"(group_size={group_size}); {len(skipped_layers)} eligible-looking "
+        f"layers left in full precision (incompatible dims)."
     )
+    if skipped_layers:
+        logger.debug("Left in full precision: %s", ", ".join(skipped_layers))
 
-    return weights, quantized_config
+    return quantized_weights, quantized_config
+
+
+def _recipe_bits(recipe: str) -> tuple[int, int]:
+    """Return (low_bits, high_bits) for a mixed-bit recipe name."""
+    high_bits = 6
+    if recipe == "mixed_2_6":
+        low_bits = 2
+    elif recipe == "mixed_3_4":
+        low_bits, high_bits = 3, 4
+    elif recipe == "mixed_3_6":
+        low_bits = 3
+    elif recipe == "mixed_4_6":
+        low_bits = 4
+    else:
+        raise ValueError(f"Invalid quant recipe {recipe}")
+    return low_bits, high_bits
+
+
+def _infer_num_layers(weights: dict[str, mx.array], config: dict[str, Any]) -> int:
+    """Determine transformer layer count from config, else infer from weight keys."""
+    for key in ("num_hidden_layers", "n_layers", "num_layers"):
+        if isinstance(config.get(key), int):
+            return config[key]
+    max_idx = -1
+    pattern = re.compile(r"\.layers\.(\d+)\.")
+    for name in weights:
+        m = pattern.search(name)
+        if m:
+            max_idx = max(max_idx, int(m.group(1)))
+    return max_idx + 1 if max_idx >= 0 else 0
+
+
+def quantize_model_mixed(
+    weights: dict[str, mx.array],
+    config: dict[str, Any],
+    recipe: str,
+    group_size: int = 64,
+) -> tuple[dict[str, mx.array], dict[str, Any]]:
+    """
+    Apply mixed-bit quantization to a raw weights dict using the given recipe.
+
+    Per-layer bit width follows the recipe's depth/special-layer rules (the same
+    rules as ``mixed_quant_predicate_builder``), applied to each weight key path.
+    Each quantized weight is stored as the standard MLX triple
+    (packed ``.weight`` + ``.scales`` + ``.biases``), giving real memory savings.
+
+    Args:
+        weights: Model weights dictionary
+        config: Model configuration
+        recipe: One of QUANT_RECIPES (e.g. "mixed_4_6")
+        group_size: Quantization group size
+
+    Returns:
+        Tuple of (quantized_weights, updated_config)
+    """
+    low_bits, high_bits = _recipe_bits(recipe)
+    num_layers = _infer_num_layers(weights, config)
+    float_dtypes = (mx.float16, mx.bfloat16, mx.float32)
+
+    def bits_for(path: str) -> int:
+        # Extract the transformer layer index from the path, if any.
+        layer_idx = 0
+        for part in path.split("."):
+            if part.isdigit():
+                layer_idx = int(part)
+                break
+        use_more_bits = num_layers > 0 and (
+            layer_idx < num_layers // 8
+            or layer_idx >= 7 * num_layers // 8
+            or (layer_idx - num_layers // 8) % 3 == 2
+        )
+        if ("v_proj" in path or "v_a_proj" in path or "v_b_proj" in path) and use_more_bits:
+            return high_bits
+        if "down_proj" in path and use_more_bits:
+            return high_bits
+        if "lm_head" in path:
+            return high_bits
+        return low_bits
+
+    quantized_weights: dict[str, mx.array] = {}
+    layer_bits: dict[str, int] = {}
+    skipped_layers: list[str] = []
+
+    for name, tensor in weights.items():
+        prefix = name[: -len(".weight")] if name.endswith(".weight") else None
+        is_2d_float_weight = (
+            prefix is not None and tensor.ndim == 2 and tensor.dtype in float_dtypes
+        )
+        already_quantized = prefix is not None and f"{prefix}.scales" in weights
+        eligible = (
+            is_2d_float_weight
+            and not already_quantized
+            and tensor.shape[-1] % group_size == 0
+            and tensor.shape[-1] >= group_size
+        )
+        if not eligible:
+            quantized_weights[name] = tensor
+            if is_2d_float_weight and not already_quantized:
+                skipped_layers.append(name)
+            continue
+
+        bits = bits_for(prefix)
+        w_q, scales, biases = mx.quantize(tensor, group_size=group_size, bits=bits)
+        quantized_weights[name] = w_q
+        quantized_weights[f"{prefix}.scales"] = scales
+        quantized_weights[f"{prefix}.biases"] = biases
+        layer_bits[prefix] = bits
+
+    if quantized_weights:
+        mx.eval(*quantized_weights.values())
+
+    if not layer_bits:
+        raise ValueError(
+            "Mixed-bit quantization produced no quantized layers (no eligible "
+            f"2D float weight divisible by group_size={group_size})."
+        )
+
+    quantized_config = copy.deepcopy(config)
+    # Top-level bits = the most common width, so a non-mixed-aware loader still
+    # gets a sensible default; per-layer widths are recorded explicitly.
+    default_bits = max(set(layer_bits.values()), key=list(layer_bits.values()).count)
+    quantized_config["quantization"] = {
+        "group_size": group_size,
+        "bits": default_bits,
+        "recipe": recipe,
+    }
+    quantized_config["quantization_layers"] = {p: layer_bits[p] for p in sorted(layer_bits)}
+
+    logger.info(
+        f"Mixed-bit quantized {len(layer_bits)} layers with recipe '{recipe}' "
+        f"(low={low_bits}, high={high_bits}, group_size={group_size}); "
+        f"{len(skipped_layers)} layers left in full precision."
+    )
+    return quantized_weights, quantized_config
 
 
 def dequantize_model(
@@ -401,19 +597,54 @@ def dequantize_model(
     """
     logger.info("Dequantizing model...")
 
+    quant_info = config.get("quantization") or {}
+    group_size = quant_info.get("group_size", 64)
+    bits = quant_info.get("bits", 4)
+    # Mixed-bit checkpoints record per-layer widths as a {prefix: bits} dict.
+    quant_layers = config.get("quantization_layers")
+    per_layer_bits = quant_layers if isinstance(quant_layers, dict) else {}
+
+    dequantized_weights: dict[str, mx.array] = {}
+    dequantized_layers: list[str] = []
+    consumed: set[str] = set()
+
+    for name, tensor in weights.items():
+        if name in consumed:
+            continue
+        # A quantized linear/embedding weight is the triple
+        # (<prefix>.weight packed uint32, <prefix>.scales, <prefix>.biases).
+        if name.endswith(".weight"):
+            prefix = name[: -len(".weight")]
+            scales_key = f"{prefix}.scales"
+            biases_key = f"{prefix}.biases"
+            if (
+                tensor.dtype == mx.uint32
+                and scales_key in weights
+                and biases_key in weights
+            ):
+                dequantized_weights[name] = mx.dequantize(
+                    tensor,
+                    weights[scales_key],
+                    weights[biases_key],
+                    group_size=group_size,
+                    bits=per_layer_bits.get(prefix, bits),
+                )
+                consumed.update({scales_key, biases_key})
+                dequantized_layers.append(prefix)
+                continue
+        dequantized_weights[name] = tensor
+
+    if dequantized_weights:
+        mx.eval(*dequantized_weights.values())
+
     # Update config to remove quantization info
     dequantized_config = copy.deepcopy(config)
-    if "quantization" in dequantized_config:
-        del dequantized_config["quantization"]
+    dequantized_config.pop("quantization", None)
+    dequantized_config.pop("quantization_layers", None)
 
-    # Dequantization logic would go here
-    # Requires model architecture to properly dequantize
-    logger.warning(
-        "Dequantization requires model architecture. "
-        "Use smlx.quant module for proper dequantization."
-    )
+    logger.info(f"Dequantized {len(dequantized_layers)} layers back to full precision.")
 
-    return weights, dequantized_config
+    return dequantized_weights, dequantized_config
 
 
 # ============================================================================
@@ -944,15 +1175,13 @@ def convert(
         weights, config = dequantize_model(weights, config)
     elif quantize:
         if quant_recipe and quant_recipe in QUANT_RECIPES:
-            # Use mixed-bit quantization
+            # Real per-layer mixed-bit quantization on the weights dict.
             logger.info(f"Using mixed-bit quantization recipe: {quant_recipe}")
-            # Note: Full mixed-bit quantization requires loading into nn.Module
-            # For now, just log and apply standard quantization
-            logger.warning(
-                f"Mixed-bit quantization recipe {quant_recipe} requires model architecture. "
-                "Applying standard quantization. For advanced quantization, use smlx.quant module."
+            weights, config = quantize_model_mixed(
+                weights, config, quant_recipe, q_group_size
             )
-        weights, config = quantize_model(weights, config, q_group_size, q_bits)
+        else:
+            weights, config = quantize_model(weights, config, q_group_size, q_bits)
 
     # Add model type to config for reference
     config["smlx_model_type"] = model_type

@@ -168,15 +168,18 @@ def quantize_model_q8_0(
         from smlx.quant import quantize_model_q8_0
 
         model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-        quantize_model_q8_0(model)  # ~2x compression, high quality
+        quantize_model_q8_0(model)  # applies Q8_0 precision; ~2x smaller on GGML export
         ```
 
     Notes:
         - Quantizes nn.Linear layers only (Embedding layers skipped)
-        - Better quality than 4-bit formats
-        - ~2x compression from FP16
-        - Compatible with GGML/llama.cpp Q8_0 format
-        - Good choice for quality-sensitive applications
+        - Applies the Q8_0 precision loss to the weights and stores the packed
+          Q8_0 form (module.weight_q8_0 / scales_q8_0) for export to GGML/llama.cpp
+        - The packed form is ~2x smaller than FP16 *when written to a GGML file*
+        - IMPORTANT: in memory the weights are dequantized back to FP16, so this
+          does NOT reduce runtime memory (MLX has no Q8_0 inference kernel). Use
+          smlx.quant.quantize_model (mx.quantize) for real in-memory savings.
+        - Better quality than 4-bit formats; good for quality-sensitive export
     """
     for _, module in model.named_modules():
         if isinstance(module, nn.Linear):

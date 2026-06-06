@@ -111,9 +111,10 @@ def load_calibration_data(
 
     # Handle different tokenizer interfaces
     if hasattr(tokenizer, "encode"):
-        tokens = tokenizer.encode(texts, return_tensors="mlx")
-        if isinstance(tokens, (list, tuple)):
-            tokens = tokens[0]
+        # Use standard HuggingFace tokenizer (returns list of token IDs)
+        token_ids = tokenizer.encode(texts)
+        # Convert to MLX array
+        tokens = mx.array(token_ids, dtype=mx.int32)
     else:
         raise ValueError("Tokenizer must have an 'encode' method")
 

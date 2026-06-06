@@ -39,7 +39,7 @@ from smlx.utils.watchdog import MemoryWatchdog
 
 from .middleware import ErrorHandlingMiddleware, LoggingMiddleware, RateLimitMiddleware
 from .model_manager import ModelManager
-from .routes import audio, chat, completions, embeddings
+from .routes import audio, chat, completions, embeddings, gym
 from .routes import models as models_route
 
 # Global instances
@@ -217,6 +217,7 @@ app.include_router(chat.router, prefix="/v1", tags=["chat"])
 app.include_router(audio.router, prefix="/v1", tags=["audio"])
 app.include_router(embeddings.router, prefix="/v1", tags=["embeddings"])
 app.include_router(models_route.router, prefix="/v1", tags=["models"])
+app.include_router(gym.router, prefix="/v1", tags=["gym"])
 
 
 # ============================================================================

@@ -12,7 +12,7 @@ work with any MLX-based language model in SMLX.
 from __future__ import annotations
 
 from collections.abc import Generator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import mlx.core as mx
@@ -28,7 +28,8 @@ class GenerationConfig:
     Configuration for text generation.
 
     This dataclass holds all parameters for controlling text generation,
-    including sampling strategies, stopping criteria, and output formatting.
+    including sampling strategies, stopping criteria, output formatting,
+    and quality validation.
 
     Args:
         max_tokens: Maximum number of tokens to generate
@@ -43,13 +44,20 @@ class GenerationConfig:
         min_tokens: Minimum tokens to generate before stopping
         stop_token_ids: List of token IDs that stop generation
         stop_strings: List of strings that stop generation
+        validate_output: Enable output validation (gibberish, repetition checks)
+        max_repetition_ratio: Maximum allowed repetition ratio (0-1)
+        quality_threshold: Minimum quality score (0-1, None = disabled)
+        retry_on_failure: Retry generation if validation fails
+        max_retries: Maximum retry attempts if validation fails
 
     Example:
         >>> config = GenerationConfig(
         ...     max_tokens=200,
         ...     temperature=0.8,
         ...     top_p=0.95,
-        ...     repetition_penalty=1.1
+        ...     repetition_penalty=1.1,
+        ...     validate_output=True,
+        ...     max_repetition_ratio=0.5
         ... )
     """
 
@@ -65,6 +73,12 @@ class GenerationConfig:
     min_tokens: int = 0
     stop_token_ids: Optional[list[int]] = None
     stop_strings: Optional[list[str]] = None
+    # Validation parameters
+    validate_output: bool = False
+    max_repetition_ratio: float = 0.6
+    quality_threshold: Optional[float] = None
+    retry_on_failure: bool = False
+    max_retries: int = 2
 
 
 def generate_step(
@@ -146,27 +160,39 @@ def generate_step(
     if logits.ndim == 3:
         logits = logits[:, -1, :]  # [batch, seq_len, vocab_size] -> [batch, vocab_size]
     # else: logits is already [batch, vocab_size]
-    mx.eval(logits)  # Evaluate to prevent compute graph accumulation
+
+    # Evaluate prompt forward pass to prevent graph accumulation
+    mx.eval(logits)
 
     # Track generated tokens for repetition penalty
     y = prompt_tokens
 
     # Generation loop
+    token_count = 0
     while True:
         # Apply logits processors
         for processor in logits_processors:
             logits = processor(y, logits)
 
-        # Sample next token
-        next_token = sampler(logits)
+        # Convert logits to log probabilities (critical for correct sampling!)
+        # This matches mlx-lm's approach and ensures proper probability distribution
+        logprobs = logits - mx.logsumexp(logits, keepdims=True)
+
+        # Sample next token from log probabilities
+        next_token = sampler(logprobs)
         mx.eval(next_token)  # Evaluate sampled token
 
-        # Yield token and logits
-        yield next_token, logits
+        # Yield token and log probabilities
+        yield next_token, logprobs
 
         # Update token history
         y = mx.concatenate([y, next_token.reshape(1)])
-        mx.eval(y)  # Evaluate concatenated token history
+        mx.eval(y)  # Evaluate concatenated history to prevent graph buildup
+
+        # Periodic memory cleanup (every 256 tokens, matching mlx-lm pattern)
+        token_count += 1
+        if token_count % 256 == 0:
+            mx.clear_cache()
 
         # Forward pass with next token
         next_token_input = next_token.reshape(1, 1)
@@ -179,7 +205,9 @@ def generate_step(
         if logits.ndim == 3:
             logits = logits[:, -1, :]  # [batch, seq_len, vocab_size] -> [batch, vocab_size]
         # else: logits is already [batch, vocab_size]
-        mx.eval(logits)  # Evaluate to prevent compute graph accumulation
+
+        # Evaluate logits to prevent compute graph accumulation
+        mx.eval(logits)
 
 
 def generate(
@@ -195,9 +223,14 @@ def generate(
     stop_token_ids: Optional[list[int]] = None,
     stop_strings: Optional[list[str]] = None,
     verbose: bool = False,
+    validate_output: Optional[bool] = None,
+    max_repetition_ratio: float = 0.6,
+    min_tokens: int = 0,
+    retry_on_failure: bool = False,
+    max_retries: int = 2,
 ) -> str:
     """
-    Generate text from a prompt.
+    Generate text from a prompt with optional output validation.
 
     Args:
         model: The language model
@@ -212,9 +245,18 @@ def generate(
         stop_token_ids: Token IDs that stop generation
         stop_strings: Strings that stop generation
         verbose: Print generation progress
+        validate_output: Enable output validation (gibberish, repetition checks).
+            If None, checks SMLX_VALIDATE_OUTPUT environment variable (default: False)
+        max_repetition_ratio: Maximum allowed repetition ratio (0-1)
+        min_tokens: Minimum tokens to generate before allowing stop
+        retry_on_failure: Retry generation if validation fails
+        max_retries: Maximum retry attempts if validation fails
 
     Returns:
         Generated text (excluding prompt)
+
+    Environment Variables:
+        SMLX_VALIDATE_OUTPUT: Set to '1' to enable validation by default
 
     Example:
         >>> model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
@@ -222,71 +264,137 @@ def generate(
         ...     model, tokenizer,
         ...     prompt="Write a Python function to",
         ...     max_tokens=100,
-        ...     temperature=0.7
+        ...     temperature=0.7,
+        ...     validate_output=True
         ... )
+        >>> # Or enable via environment variable:
+        >>> import os
+        >>> os.environ['SMLX_VALIDATE_OUTPUT'] = '1'
+        >>> text = generate(model, tokenizer, prompt="...")  # Validation enabled
     """
-    # Tokenize prompt
-    prompt_tokens = mx.array(tokenizer.encode(prompt))
+    import logging
+    import os
 
-    if verbose:
-        print(f"Prompt tokens: {len(prompt_tokens)}")
-        print(f"Generating up to {max_tokens} tokens...")
-        print("-" * 50)
+    logger = logging.getLogger(__name__)
 
-    # Default stop tokens
-    if stop_token_ids is None:
-        stop_token_ids = []
+    # Check environment variable if validate_output not explicitly set
+    if validate_output is None:
+        validate_output = os.getenv("SMLX_VALIDATE_OUTPUT", "0") == "1"
 
-    # Add EOS token if available
-    if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
-        stop_token_ids = stop_token_ids + [tokenizer.eos_token_id]
-
-    # Generate tokens
-    generated_tokens = []
-    generated_text = ""
-
-    for i, (token, _) in enumerate(
-        generate_step(
-            model=model,
-            prompt_tokens=prompt_tokens,
-            temp=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            repetition_penalty=repetition_penalty,
-        )
-    ):
-        if i >= max_tokens:
-            break
-
-        token_id = int(token.item())
-        generated_tokens.append(token_id)
-
-        # Decode incrementally
-        generated_text = tokenizer.decode(generated_tokens)
+    # Wrapper for generation logic (allows retry)
+    def _generate_internal():
+        # Tokenize prompt
+        prompt_tokens = mx.array(tokenizer.encode(prompt))
 
         if verbose:
-            # Print new text
-            print(tokenizer.decode([token_id]), end="", flush=True)
+            print(f"Prompt tokens: {len(prompt_tokens)}")
+            print(f"Generating up to {max_tokens} tokens...")
+            print("-" * 50)
 
-        # Check for stop strings
-        if stop_strings:
-            for stop in stop_strings:
-                if stop in generated_text:
-                    generated_text = generated_text.split(stop)[0]
-                    if verbose:
-                        print()
-                    return generated_text
+        # Default stop tokens
+        nonlocal stop_token_ids
+        if stop_token_ids is None:
+            stop_token_ids = []
 
-        # Check for stop tokens
-        if token_id in stop_token_ids:
-            break
+        # Add EOS token if available
+        if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
+            stop_token_ids = stop_token_ids + [tokenizer.eos_token_id]
 
-    if verbose:
-        print()
-        print("-" * 50)
-        print(f"Generated {len(generated_tokens)} tokens")
+        # Generate tokens
+        generated_tokens = []
+        generated_text = ""
 
+        for i, (token, _) in enumerate(
+            generate_step(
+                model=model,
+                prompt_tokens=prompt_tokens,
+                temp=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                repetition_penalty=repetition_penalty,
+            )
+        ):
+            if i >= max_tokens:
+                break
+
+            token_id = int(token.item())
+            generated_tokens.append(token_id)
+
+            # Decode incrementally
+            generated_text = tokenizer.decode(generated_tokens)
+
+            if verbose:
+                # Print new text
+                print(tokenizer.decode([token_id]), end="", flush=True)
+
+            # Check for stop strings
+            if stop_strings:
+                for stop in stop_strings:
+                    if stop in generated_text:
+                        generated_text = generated_text.split(stop)[0]
+                        if verbose:
+                            print()
+                        return generated_text, generated_tokens
+
+            # Check for stop tokens (but respect min_tokens)
+            if token_id in stop_token_ids and i >= min_tokens:
+                break
+
+        if verbose:
+            print()
+            print("-" * 50)
+            print(f"Generated {len(generated_tokens)} tokens")
+
+        return generated_text, generated_tokens
+
+    # Retry loop for validation
+    last_error = None
+    for attempt in range(max(1, max_retries if retry_on_failure else 1)):
+        try:
+            # Generate text
+            generated_text, generated_tokens = _generate_internal()
+
+            # Validate output if requested
+            if validate_output:
+                from .validation import validate_text_output
+
+                is_valid, reason = validate_text_output(
+                    generated_text,
+                    min_length=min_tokens,
+                    max_repetition_ratio=max_repetition_ratio,
+                    check_gibberish=True,
+                )
+
+                if not is_valid:
+                    if retry_on_failure and attempt < max_retries - 1:
+                        logger.warning(
+                            f"Validation failed (attempt {attempt + 1}/{max_retries}): {reason}"
+                        )
+                        # Adjust temperature for retry (add some randomness)
+                        temperature = min(1.0, temperature * 1.2)
+                        last_error = reason
+                        continue
+                    else:
+                        logger.error(f"Output validation failed: {reason}")
+                        if not retry_on_failure:
+                            # Just log warning, still return the output
+                            logger.warning(f"Returning potentially low-quality output: {reason}")
+
+            # Success!
+            return generated_text
+
+        except Exception as e:
+            logger.error(f"Generation failed (attempt {attempt + 1}/{max_retries}): {e}")
+            last_error = str(e)
+            if not retry_on_failure or attempt >= max_retries - 1:
+                raise
+
+    # All retries failed
+    if last_error:
+        logger.error(f"All {max_retries} generation attempts failed: {last_error}")
+
+    # Return last attempt even if validation failed
     return generated_text
 
 
@@ -425,9 +533,7 @@ def chat(
     """
     # Apply chat template
     if hasattr(tokenizer, "apply_chat_template"):
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     else:
         # Fallback: simple formatting
         prompt = ""

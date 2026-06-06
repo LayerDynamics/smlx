@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Optional
 
 import mlx.core as mx
+import numpy as np
 from huggingface_hub import hf_hub_download
 
-from .config import VADConfig, DEFAULT_CONFIG_16K
+from .config import DEFAULT_CONFIG_16K, VADConfig
 from .model import SileroVAD
 
 
@@ -120,12 +121,56 @@ def load_weights(model_path: Path) -> Optional[dict]:
             except Exception as e:
                 print(f"Warning: Could not load {wf}: {e}")
 
-    # If ONNX, we'd need to convert (not implemented here)
-    if any(wf.endswith(".onnx") for wf in weight_files):
-        print("Note: ONNX format detected. Conversion to MLX not yet implemented.")
-        print("Model will be initialized with random weights.")
+    # If only ONNX is available (Silero's native format), convert its weights to
+    # MLX. This requires the optional `onnx` package; if it is missing or the file
+    # has no weights we raise a clear error rather than silently returning None
+    # (which would leave the VAD running on random, untrained weights).
+    onnx_files = [wf for wf in weight_files if wf.endswith(".onnx")]
+    if onnx_files:
+        print(f"ONNX format detected ({onnx_files[0]}). Converting weights to MLX...")
+        weights = _convert_onnx_weights(onnx_files[0])
+        print(f"Converted {len(weights)} weight tensors from ONNX")
+        return weights
 
     return None
+
+
+def _convert_onnx_weights(onnx_path: str) -> dict:
+    """Convert the trained weights in an ONNX model to an MLX weight dict.
+
+    Reads every initializer (the trained parameters) from the ONNX graph and
+    converts it to an ``mx.array`` keyed by its ONNX tensor name.
+
+    Args:
+        onnx_path: Path to the .onnx file.
+
+    Returns:
+        Dict mapping ONNX initializer names to MLX arrays.
+
+    Raises:
+        RuntimeError: If the optional ``onnx`` package is unavailable, or the
+            file contains no initializer weights to convert.
+    """
+    try:
+        import onnx
+        from onnx import numpy_helper
+    except ImportError as e:
+        raise RuntimeError(
+            "Silero VAD weights are in ONNX format, but the optional 'onnx' package "
+            "is not installed. Install it with `pip install onnx` to convert them, "
+            "or place pre-converted .safetensors/.npz weights in the model directory."
+        ) from e
+
+    onnx_model = onnx.load(onnx_path)
+    weights = {
+        initializer.name: mx.array(np.array(numpy_helper.to_array(initializer)))
+        for initializer in onnx_model.graph.initializer
+    }
+    if not weights:
+        raise RuntimeError(
+            f"ONNX file '{onnx_path}' contains no initializer weights to convert."
+        )
+    return weights
 
 
 def load(

@@ -6,7 +6,7 @@ Image Processor for SmolVLM-256M-Instruct.
 
 Handles image preprocessing for the SigLIP vision encoder:
 - Convert to RGB
-- Resize to 384x384
+- Resize to 512x512 (matches HuggingFace config)
 - Rescale pixel values from [0, 255] to [0, 1]
 - Normalize with mean=(0.5, 0.5, 0.5) and std=(0.5, 0.5, 0.5)
 - Convert to MLX array format
@@ -23,7 +23,7 @@ class ImageProcessor:
 
     Preprocessing steps:
     1. Convert to RGB
-    2. Resize to (384, 384)
+    2. Resize to (512, 512) - matches HuggingFace config
     3. Rescale from [0, 255] to [0, 1]
     4. Normalize with mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)
     5. Convert to channel-first format [C, H, W]
@@ -31,7 +31,7 @@ class ImageProcessor:
     Args:
         image_mean: Mean for normalization (default: (0.5, 0.5, 0.5))
         image_std: Std for normalization (default: (0.5, 0.5, 0.5))
-        size: Target size as (height, width) (default: (384, 384))
+        size: Target size as (height, width) (default: (512, 512))
         rescale_factor: Rescaling factor (default: 1/255)
     """
 
@@ -39,7 +39,7 @@ class ImageProcessor:
         self,
         image_mean=(0.5, 0.5, 0.5),
         image_std=(0.5, 0.5, 0.5),
-        size=(384, 384),
+        size=(512, 512),
         rescale_factor=1 / 255,
     ):
         self.image_mean = np.array(image_mean, dtype=np.float32).reshape(3, 1, 1)

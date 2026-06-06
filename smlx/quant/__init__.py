@@ -75,7 +75,7 @@ from .dynamic_quant import dynamic_quantize, estimate_sensitivities, estimate_th
 
 # GPTQ (GPT Quantization)
 from .gptq import Catcher, gptq_quantize
-from .lora import LoRAEmbedding, LoRALinear, LoRASwitchLinear
+from .lora import LoRAEmbedding, LoRALinear, LoRASwitchLinear, apply_lora, merge_lora
 
 # Utilities
 from .utils import (
@@ -278,6 +278,8 @@ __all__ = [
     "LoRALinear",
     "LoRAEmbedding",
     "LoRASwitchLinear",
+    "apply_lora",
+    "merge_lora",
     # DoRA
     "DoRALinear",
     "DoRAEmbedding",

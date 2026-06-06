@@ -54,15 +54,15 @@ class TestModelConfiguration:
         """Test that post_init sets defaults correctly."""
         config = get_default_config()
 
-        # Check no_rope_layers was auto-generated
+        # Check no_rope_layers was set by post_init
         assert config.no_rope_layers is not None, "no_rope_layers should be set by post_init"
         assert len(config.no_rope_layers) == config.num_hidden_layers
 
-        # Every 4th layer should have no RoPE (value=0)
+        # Default behavior: all layers use RoPE (value=1, NoPE disabled)
+        # This is correct for standard SmolLM2-135M checkpoints
         for i in range(config.num_hidden_layers):
-            expected = int((i + 1) % config.no_rope_layer_interval != 0)
-            assert config.no_rope_layers[i] == expected, \
-                f"Layer {i}: expected {expected}, got {config.no_rope_layers[i]}"
+            assert config.no_rope_layers[i] == 1, \
+                f"Layer {i}: expected RoPE enabled (1), got {config.no_rope_layers[i]}"
 
     def test_config_from_dict(self):
         """Test loading configuration from dictionary."""

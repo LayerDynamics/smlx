@@ -10,6 +10,8 @@ A 1.5B parameter multimodal model combining:
 - Simple MLP projector
 """
 
+import logging
+import os
 from typing import Optional, Tuple
 
 import mlx.core as mx
@@ -20,6 +22,18 @@ from .vision import VisionModel
 from .language import TinyLlamaModel
 from .connector import build_projector
 from smlx.utils.cache import KVCache
+from smlx.utils.vlm_diagnostics import (
+    log_embedding_comparison,
+    log_logits_distribution,
+    log_vision_features,
+)
+
+logger = logging.getLogger(__name__)
+
+# Enable debug logging if SMLX_DEBUG is set
+DEBUG = os.getenv("SMLX_DEBUG", "0") == "1"
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
 
 
 class TinyLLaVA(nn.Module):
@@ -90,8 +104,17 @@ class TinyLLaVA(nn.Module):
             all_hidden_states = vision_outputs[2]  # Hidden states tuple
             vision_features = all_hidden_states[self.vision_feature_layer]
 
+        if DEBUG:
+            log_vision_features(vision_features, label="tinyllava_vision_features_pre_proj")
+
         # Project to language space
         image_features = self.multi_modal_projector(vision_features)
+
+        if DEBUG:
+            log_vision_features(image_features, label="tinyllava_projected_vision_features")
+
+        # No additional normalization or scaling - let the learned projector handle it
+        # Dtype casting happens later in prepare_inputs_for_generation() to match text embeddings
 
         return image_features
 
@@ -101,11 +124,11 @@ class TinyLLaVA(nn.Module):
         pixel_values: Optional[mx.array] = None,
         image_features: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Optional[mx.array]]:
-        """Prepare inputs by merging text and image features.
+        """Prepare inputs using token injection to replace <image> tokens.
 
         Args:
-            input_ids: Text token IDs [B, seq_len]
-            pixel_values: Optional image tensor [B, C, H, W]
+            input_ids: Text token IDs [B, seq_len] containing <image> token(s)
+            pixel_values: Optional image tensor [B, H, W, C]
             image_features: Pre-computed image features [B, num_patches, hidden_size]
 
         Returns:
@@ -122,15 +145,44 @@ class TinyLLaVA(nn.Module):
         if image_features is None:
             return text_embeddings, None
 
-        # Merge image and text embeddings
-        # Image features are prepended to text
-        B, text_len, hidden_size = text_embeddings.shape
-        _, num_image_tokens, _ = image_features.shape
+        # Token injection: replace <image> token embeddings with vision features
+        # LLaVA approach: find positions of IMAGE_TOKEN_INDEX and inject features
+        import numpy as np
 
-        # Concatenate: [image_features, text_embeddings]
-        combined_embeddings = mx.concatenate(
-            [image_features, text_embeddings], axis=1
-        )
+        # Find image token positions (assuming batch size is 1)
+        image_token_index = self.config.image_token_index
+        image_positions = np.where(input_ids == image_token_index)[1].tolist()
+
+        if not image_positions:
+            # No image tokens found, return text only
+            return text_embeddings, image_features
+
+        # Reshape image features for injection
+        num_images, num_patches, vision_hidden_size = image_features.shape
+        reshaped_image_features = image_features.reshape(-1, vision_hidden_size)
+
+        # Cast to match dtype
+        reshaped_image_features = reshaped_image_features.astype(text_embeddings.dtype)
+
+        if DEBUG:
+            log_embedding_comparison(
+                image_features, text_embeddings, label="tinyllava_vision_vs_text_embeds"
+            )
+
+        # Inject image features at token positions
+        # This replaces the single <image> token with num_patches features
+        # Strategy: split text embeddings and insert image features
+
+        if len(image_positions) == 1:
+            # Single image: split at image token and insert features
+            pos = image_positions[0]
+            before = text_embeddings[:, :pos, :]
+            after = text_embeddings[:, pos+1:, :]  # Skip the <image> token itself
+            combined_embeddings = mx.concatenate([before, image_features, after], axis=1)
+        else:
+            # Multiple images: handle each position
+            # For simplicity, TinyLLaVA typically uses single image
+            raise NotImplementedError("Multiple image tokens not yet supported")
 
         return combined_embeddings, image_features
 
@@ -159,19 +211,18 @@ class TinyLLaVA(nn.Module):
             input_ids, pixel_values, image_features
         )
 
-        # Create cache if needed
-        if cache is None:
-            cache = [None] * len(self.language_model.layers)
-
-        # Forward through language model layers
-        for layer, layer_cache in zip(self.language_model.layers, cache):
-            hidden_states = layer(hidden_states, mask=mask, cache=layer_cache)
-
-        # Final norm
-        hidden_states = self.language_model.norm(hidden_states)
+        # Forward through language model using forward_embeddings
+        # This properly handles the embedding input instead of token IDs
+        hidden_states = self.language_model.forward_embeddings(
+            hidden_states, mask=mask, cache=cache
+        )
 
         # Compute logits
         logits = self.lm_head(hidden_states)
+
+        if DEBUG:
+            # Log logits distribution for last token (used for generation)
+            log_logits_distribution(logits[:, -1, :], label="tinyllava_output_logits")
 
         return logits, image_features
 

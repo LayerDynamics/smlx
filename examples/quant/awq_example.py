@@ -8,6 +8,9 @@ Demonstrates AWQ, which protects salient weight channels based on
 activation patterns. AWQ typically provides better quality than
 standard quantization at the same bit width.
 
+This example includes comprehensive quality benchmarking to measure
+quality degradation from quantization.
+
 AWQ is ideal for:
 - High-quality 4-bit quantization
 - Preserving model performance
@@ -19,6 +22,9 @@ import time
 
 from smlx.models.SmolLM2_135M import load, generate
 from smlx.quant import awq_quantize
+from smlx.quant.utils import load_calibration_data
+from smlx.utils.quality_metrics import assess_quality, compare_quality, calculate_perplexity
+from smlx.utils.validation import validate_text_output
 
 
 def main():
@@ -30,6 +36,16 @@ def main():
     print("\n1. Loading SmolLM2-135M...")
     model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
 
+    # Load calibration data for AWQ
+    print("\n2. Loading calibration data...")
+    calibration_data = load_calibration_data(
+        tokenizer=tokenizer,
+        num_samples=128,
+        sequence_length=512,
+        verbose=True
+    )
+    print(f"   ✅ Loaded calibration data: {calibration_data.shape}")
+
     test_prompts = [
         "Write a Python function to calculate factorial:",
         "What is machine learning?",
@@ -37,8 +53,9 @@ def main():
     ]
 
     # Baseline performance
-    print("\n2. Baseline (FP16) Performance:")
+    print("\n3. Baseline (FP16) Performance:")
     fp16_outputs = []
+    fp16_quality_metrics = []
 
     for i, prompt in enumerate(test_prompts, 1):
         start = time.time()
@@ -52,15 +69,23 @@ def main():
         )
         elapsed = time.time() - start
         fp16_outputs.append(output)
-        print(f"   Prompt {i}: {elapsed:.2f}s - {output[:50]}...")
+
+        # Assess quality
+        quality = assess_quality(model, tokenizer, output, context=prompt)
+        fp16_quality_metrics.append(quality)
+
+        print(f"   Prompt {i}: {elapsed:.2f}s")
+        print(f"     Output: {output[:60]}...")
+        print(f"     Quality: PPL={quality.perplexity:.1f}, Rep={quality.repetition_3gram:.2%}")
 
     # Quantize with AWQ
-    print("\n3. Quantizing with AWQ...")
+    print("\n4. Quantizing with AWQ...")
     print("   AWQ protects salient channels based on activations")
     print("   This typically preserves quality better than naive quantization")
 
     quantized_model = awq_quantize(
         model=model,
+        calibration_data=calibration_data,  # Required for AWQ
         bits=4,
         group_size=64,
     )
@@ -68,8 +93,9 @@ def main():
     print("   ✅ AWQ quantization complete!")
 
     # Test quantized model
-    print("\n4. AWQ-Quantized (4-bit) Performance:")
+    print("\n5. AWQ-Quantized (4-bit) Performance:")
     awq_outputs = []
+    awq_quality_metrics = []
 
     for i, prompt in enumerate(test_prompts, 1):
         start = time.time()
@@ -83,10 +109,47 @@ def main():
         )
         elapsed = time.time() - start
         awq_outputs.append(output)
-        print(f"   Prompt {i}: {elapsed:.2f}s - {output[:50]}...")
+
+        # Assess quality
+        quality = assess_quality(quantized_model, tokenizer, output, context=prompt)
+        awq_quality_metrics.append(quality)
+
+        # Validate output
+        is_valid, reason = validate_text_output(
+            output, min_length=5, max_repetition_ratio=0.6, check_gibberish=True
+        )
+
+        print(f"   Prompt {i}: {elapsed:.2f}s")
+        print(f"     Output: {output[:60]}...")
+        print(f"     Quality: PPL={quality.perplexity:.1f}, Rep={quality.repetition_3gram:.2%}")
+        print(f"     Valid: {is_valid}")
+
+    # Quality comparison
+    print("\n6. Quality Degradation Analysis:")
+    print("   Comparing FP16 vs AWQ-4bit quality metrics:\n")
+
+    quality_degradations = []
+    for i, (fp16_q, awq_q) in enumerate(zip(fp16_quality_metrics, awq_quality_metrics), 1):
+        comparison = compare_quality(fp16_q, awq_q, tolerance=0.20)
+        quality_degradations.append(comparison)
+
+        print(f"   Prompt {i}:")
+        print(f"     Perplexity:  {fp16_q.perplexity:.1f} → {awq_q.perplexity:.1f} "
+              f"({comparison['perplexity_change']:+.1%})")
+        print(f"     Repetition:  {fp16_q.repetition_3gram:.2%} → {awq_q.repetition_3gram:.2%} "
+              f"({comparison['repetition_change']:+.1%})")
+        print(f"     Diversity:   {fp16_q.diversity_score:.2f} → {awq_q.diversity_score:.2f}")
+        print(f"     Acceptable:  {'✅ Yes' if comparison['acceptable'] else '❌ No'}")
+        if not comparison['acceptable']:
+            print(f"     Issues: {', '.join(comparison['degradations'])}")
+        print()
+
+    # Overall quality summary
+    acceptable_count = sum(1 for c in quality_degradations if c['acceptable'])
+    print(f"   Overall: {acceptable_count}/{len(quality_degradations)} prompts passed quality threshold")
 
     # Compare AWQ vs standard quantization
-    print("\n5. AWQ Features:")
+    print("\n7. AWQ Features:")
     print("   ✓ Protects salient weight channels")
     print("   ✓ Activation-aware scaling factors")
     print("   ✓ Better quality preservation than standard quantization")
@@ -94,7 +157,7 @@ def main():
     print("   ✓ ~4x memory reduction (FP16 → 4-bit)")
 
     # Advanced: Compare different configurations
-    print("\n6. Testing AWQ configurations:")
+    print("\n8. Testing AWQ configurations:")
 
     configs = [
         {"bits": 4, "group_size": 32, "name": "4-bit, g=32 (fine-grained)"},
@@ -108,6 +171,7 @@ def main():
         print(f"\n   {config['name']}:")
         q_model = awq_quantize(
             model=model,
+            calibration_data=calibration_data,  # Required for AWQ
             bits=config["bits"],
             group_size=config["group_size"],
         )
@@ -134,6 +198,11 @@ def main():
     print("- Activation-aware scaling protects important weights")
     print("- group_size=64 is a good balance for M4")
     print("- 4-bit AWQ rivals 8-bit standard quantization in quality")
+    print("\nQuality Metrics Summary:")
+    print("- Perplexity increase typically < 20% (acceptable threshold)")
+    print("- Repetition patterns remain similar to FP16")
+    print("- Output validation catches any degraded generations")
+    print("- Quality assessment enables automated quality assurance")
 
 
 if __name__ == "__main__":

@@ -11,10 +11,10 @@ Demonstrates how to evaluate VLMs on multimodal benchmarks:
 - OCRBench: OCR capabilities
 """
 
-from smlx.evals.math_vista import evaluate_math_vista, process_question, normalize_answer
-from smlx.evals.mmmu import evaluate_mmmu
-from smlx.evals.mmstar import evaluate_mmstar
-from smlx.evals.ocrbench import evaluate_ocrbench
+from smlx.evals.math_vista import process_question, normalize_answer
+from smlx.evals.mmmu import process_question as mmmu_process_question, normalize_number, MMMU_SUBJECTS
+from smlx.evals.mmstar import extract_answer, CATEGORIES
+from smlx.evals.ocrbench import evaluate_answer as ocrbench_evaluate_answer, normalize_answer as ocrbench_normalize_answer
 
 
 def demo_math_vista():
@@ -56,8 +56,6 @@ def demo_mmmu():
     print("MMMU Evaluation")
     print("=" * 70)
 
-    from smlx.evals.mmmu import process_question, normalize_number, MMMU_SUBJECTS
-
     print(f"\nMMMU covers {len(MMMU_SUBJECTS)} subjects:")
     for subject in MMMU_SUBJECTS[:5]:
         print(f"  - {subject}")
@@ -77,8 +75,6 @@ def demo_mmstar():
     print("\n" + "=" * 70)
     print("MMStar Evaluation")
     print("=" * 70)
-
-    from smlx.evals.mmstar import extract_answer, CATEGORIES
 
     print("\nMMStar evaluates across 6 categories:")
     for category, subcats in CATEGORIES.items():
@@ -106,8 +102,6 @@ def demo_ocrbench():
     print("OCRBench Evaluation")
     print("=" * 70)
 
-    from smlx.evals.ocrbench import evaluate_answer, normalize_answer
-
     # Ground truths (semicolon-separated alternatives)
     ground_truths = "hello;Hello;HELLO"
 
@@ -120,7 +114,7 @@ def demo_ocrbench():
 
     print("\nOCR answer matching:")
     for pred in predictions:
-        result = evaluate_answer(pred, ground_truths)
+        result = ocrbench_evaluate_answer(pred, ground_truths)
         print(f"  '{pred}' → {'✓ Match' if result else '✗ No match'}")
 
 
@@ -160,11 +154,12 @@ def main():
     print("     - Multiple acceptable answers")
 
     print("\n💡 Usage with VLMs:")
-    print("   When SmolVLM is implemented:")
+    print("   When SmolVLM is implemented, you can use these evaluation")
+    print("   utilities to assess VLM performance on multimodal benchmarks.")
     print("   >>> from smlx.models.SmolVLM_256M import load")
-    print("   >>> from smlx.evals.math_vista import evaluate_math_vista")
+    print("   >>> from smlx.evals.math_vista import process_question")
     print("   >>> model, processor = load('SmolVLM-256M')")
-    print("   >>> results = evaluate_math_vista(model, processor)")
+    print("   >>> # Use process_question() to format prompts for evaluation")
 
     print("\n" + "=" * 70)
     print("✅ VLM Eval Example Complete!")

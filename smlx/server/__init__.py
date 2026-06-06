@@ -1,4 +1,4 @@
-# Copyright © 2025 SMLX Project
+# Copyright Â© 2025 SMLX Project
 
 """
 SMLX Server - FastAPI-based inference server for small MLX models.

@@ -10,8 +10,11 @@ Supports:
 - Visual question answering
 - Image captioning
 - Temperature and top-p sampling
+
+Includes output validation to detect and prevent gibberish outputs.
 """
 
+import logging
 from typing import Generator, List, Optional, Union
 
 import mlx.core as mx
@@ -25,6 +28,9 @@ from .model import TinyLLaVA
 
 # Import cache from local module - enhanced with monitoring & quantization
 from .cache import make_kv_cache
+from ...utils.validation import validate_text_output
+
+logger = logging.getLogger(__name__)
 
 # Import sampling utilities from SmolLM2 (reuse where possible)
 try:
@@ -57,6 +63,66 @@ except ImportError:
         return int(token.item())
 
 
+def create_attention_mask(seq_len: int, num_image_tokens: int = 0) -> mx.array:
+    """Create causal attention mask for vision-language model.
+
+    Args:
+        seq_len: Text sequence length (including <image> token)
+        num_image_tokens: Number of vision feature tokens (729 for TinyLLaVA)
+
+    Returns:
+        Attention mask of shape [1, total_len, total_len]
+        With token injection: total_len = seq_len - 1 + num_image_tokens
+        (the -1 accounts for replacing the <image> token)
+    """
+    if num_image_tokens > 0:
+        # Token injection: <image> token (1) is replaced by vision features (729)
+        total_len = seq_len - 1 + num_image_tokens
+    else:
+        # Text-only generation
+        total_len = seq_len
+
+    # Create causal mask (lower triangular)
+    mask = mx.tril(mx.ones((total_len, total_len)))
+    # Add batch dimension
+    mask = mx.expand_dims(mask, 0)
+    return mask
+
+
+def format_prompt(prompt: str, has_image: bool = False, image_token: str = "<image>") -> str:
+    """Format prompt using TinyLLaVA's conv_mode="v1" template.
+
+    Args:
+        prompt: User query/question
+        has_image: Whether an image is provided
+        image_token: Image placeholder token
+
+    Returns:
+        Formatted prompt string
+
+    Examples:
+        >>> format_prompt("What are these?", has_image=True)
+        'USER: <image>\\nWhat are these?\\nASSISTANT:'
+
+        >>> format_prompt("Hello", has_image=False)
+        'USER: Hello\\nASSISTANT:'
+    """
+    # Check if prompt already has the template format
+    if prompt.startswith("USER:") and "ASSISTANT:" in prompt:
+        return prompt
+
+    # Build template: USER: <image>\n{query}\nASSISTANT:
+    if has_image and image_token not in prompt:
+        formatted = f"USER: {image_token}\n{prompt}\nASSISTANT:"
+    else:
+        # Remove any standalone image tokens if no image provided
+        if not has_image:
+            prompt = prompt.replace(image_token, "").strip()
+        formatted = f"USER: {prompt}\nASSISTANT:"
+
+    return formatted
+
+
 def prepare_inputs(
     processor: Processor,
     prompt: str,
@@ -67,7 +133,7 @@ def prepare_inputs(
 
     Args:
         processor: Combined tokenizer + image processor
-        prompt: Text prompt
+        prompt: Text prompt (will be formatted with USER/ASSISTANT template)
         image: Optional image(s) (URL, path, or PIL Image)
         image_token: Token to use for image placeholders
 
@@ -83,22 +149,25 @@ def prepare_inputs(
             images = image
 
         # Load images
-        loaded_images = [
-            load_image(img) if isinstance(img, str) else img for img in images
-        ]
+        loaded_images = [load_image(img) if isinstance(img, str) else img for img in images]
 
         # Preprocess images
         processed_images = processor.image_processor(loaded_images)
         pixel_values = mx.array(np.stack(processed_images))
 
-        # Add <image> tokens to prompt if not already present
-        if image_token not in prompt:
-            # Prepend image tokens (one per image)
-            prompt = (image_token + "\n") * len(images) + prompt
+    # Format prompt with USER/ASSISTANT template (conv_mode="v1")
+    prompt = format_prompt(prompt, has_image=(image is not None), image_token=image_token)
 
-    # Tokenize text
+    # Keep <image> token in prompt for token injection
+    # LLaVA uses token injection: finds IMAGE_TOKEN_INDEX positions and replaces with vision features
+    prompt_for_tokenization = prompt
+    # Clean up extra newlines
+    while "\n\n" in prompt_for_tokenization:
+        prompt_for_tokenization = prompt_for_tokenization.replace("\n\n", "\n")
+
+    # Tokenize text (keeping <image> token for injection)
     inputs = processor.tokenizer(
-        prompt,
+        prompt_for_tokenization,
         return_tensors="np",
         padding=False,
         truncation=False,
@@ -121,6 +190,12 @@ def generate(
     temperature: float = 0.7,
     top_p: float = 0.9,
     verbose: bool = False,
+    validate_output: bool = False,
+    max_repetition_ratio: float = 0.6,
+    check_gibberish: bool = True,
+    retry_on_failure: bool = False,
+    max_retries: int = 2,
+    min_length: int = 5,
 ) -> str:
     """Generate text response from prompt and optional image.
 
@@ -133,6 +208,12 @@ def generate(
         temperature: Sampling temperature (0 = greedy)
         top_p: Nucleus sampling threshold
         verbose: Print generation statistics
+        validate_output: Enable output validation (gibberish/repetition detection)
+        max_repetition_ratio: Maximum allowed repetition ratio
+        check_gibberish: Check for gibberish patterns
+        retry_on_failure: Retry generation if validation fails
+        max_retries: Maximum number of retries
+        min_length: Minimum output length
 
     Returns:
         Generated text
@@ -148,60 +229,111 @@ def generate(
         ...     image=image,
         ...     max_tokens=300
         ... )
+        >>>
+        >>> # With validation
+        >>> output = generate(
+        ...     model=model,
+        ...     processor=processor,
+        ...     prompt="Describe this image:",
+        ...     image=image,
+        ...     validate_output=True,
+        ...     retry_on_failure=True
+        ... )
     """
-    # Prepare inputs
-    inputs = prepare_inputs(processor, prompt, image)
-    input_ids = inputs["input_ids"]
-    pixel_values = inputs["pixel_values"]
 
-    # Encode image if provided (only once at the start)
-    image_features = None
-    if pixel_values is not None:
-        image_features = model.encode_images(pixel_values)
-        # Evaluate image features to prevent graph accumulation
-        mx.eval(image_features)
+    # Internal generation function for retry logic
+    def _generate_internal(current_temperature: float) -> str:
+        # Prepare inputs
+        inputs = prepare_inputs(processor, prompt, image)
+        input_ids = inputs["input_ids"]
+        pixel_values = inputs["pixel_values"]
 
-    # Create KV cache
-    cache = make_kv_cache(model.language_model)
+        # Encode image if provided (only once at the start)
+        image_features = None
+        num_image_tokens = 0
+        if pixel_values is not None:
+            image_features = model.encode_images(pixel_values)
+            # Evaluate image features to prevent graph accumulation
+            mx.eval(image_features)
+            num_image_tokens = image_features.shape[1]  # Usually 729 for TinyLLaVA
 
-    # First forward pass (process prompt + image)
-    # Model handles combining image and text embeddings
-    logits, _ = model(input_ids, pixel_values=None, image_features=image_features, cache=cache)
-    logits = logits[:, -1, :]
-    # Evaluate to prevent computation graph accumulation
-    mx.eval(logits)
+        # Create attention mask for first forward pass
+        text_len = input_ids.shape[1]
+        mask = create_attention_mask(text_len, num_image_tokens)
+        mx.eval(mask)
 
-    # Sample first token
-    token = sample_token(logits, temperature, top_p)
-    tokens = [token]
+        # Create KV cache
+        cache = make_kv_cache(model.language_model)
 
-    # Generate remaining tokens
-    for _ in range(max_tokens - 1):
-        # Forward pass with just the new token (no image features after first pass)
-        y = mx.array([[token]])
-        # Evaluate input array
-        mx.eval(y)
-        logits, _ = model(y, pixel_values=None, image_features=None, cache=cache)
+        # First forward pass (process prompt + image)
+        # Model handles combining image and text embeddings
+        logits, _ = model(
+            input_ids, pixel_values=None, image_features=image_features, mask=mask, cache=cache
+        )
         logits = logits[:, -1, :]
         # Evaluate to prevent computation graph accumulation
         mx.eval(logits)
 
-        # Sample next token
-        token = sample_token(logits, temperature, top_p)
+        # Sample first token
+        token = sample_token(logits, current_temperature, top_p)
+        tokens = [token]
 
-        # Check for EOS
-        if processor.tokenizer.eos_token_id and token == processor.tokenizer.eos_token_id:
-            break
+        # Generate remaining tokens
+        for _ in range(max_tokens - 1):
+            # Forward pass with just the new token (no image features after first pass)
+            y = mx.array([[token]])
+            # Evaluate input array
+            mx.eval(y)
+            # No mask needed for single token (or use None, MLX handles it)
+            logits, _ = model(y, pixel_values=None, image_features=None, mask=None, cache=cache)
+            logits = logits[:, -1, :]
+            # Evaluate to prevent computation graph accumulation
+            mx.eval(logits)
 
-        tokens.append(token)
+            # Sample next token
+            token = sample_token(logits, current_temperature, top_p)
 
-    # Decode tokens
-    output_text = processor.tokenizer.decode(tokens, skip_special_tokens=True)
+            # Check for EOS
+            if processor.tokenizer.eos_token_id and token == processor.tokenizer.eos_token_id:
+                break
 
-    if verbose:
-        print(f"Generated {len(tokens)} tokens")
+            tokens.append(token)
 
-    return output_text
+        # Decode tokens
+        output_text = processor.tokenizer.decode(tokens, skip_special_tokens=True)
+
+        if verbose:
+            print(f"Generated {len(tokens)} tokens")
+
+        return output_text
+
+    # Retry loop with validation
+    current_temperature = temperature
+    for attempt in range(max(1, max_retries + 1 if retry_on_failure else 1)):
+        generated_text = _generate_internal(current_temperature)
+
+        # Validate output if enabled
+        if validate_output:
+            is_valid, reason = validate_text_output(
+                generated_text,
+                min_length=min_length,
+                max_repetition_ratio=max_repetition_ratio,
+                check_gibberish=check_gibberish,
+            )
+
+            if not is_valid:
+                logger.warning(f"TinyLLaVA output validation failed: {reason}")
+
+                if retry_on_failure and attempt < max_retries:
+                    logger.info(f"Retrying generation (attempt {attempt + 2}/{max_retries + 1})...")
+                    # Adjust temperature for retry (decrease for more deterministic output)
+                    current_temperature = max(0.1, current_temperature * 0.8)
+                    continue
+
+        # Success or max retries reached
+        break
+
+    return generated_text
 
 
 def stream_generate(
@@ -246,17 +378,26 @@ def stream_generate(
 
     # Encode image if provided (only once at the start)
     image_features = None
+    num_image_tokens = 0
     if pixel_values is not None:
         image_features = model.encode_images(pixel_values)
         # Evaluate image features to prevent graph accumulation
         mx.eval(image_features)
+        num_image_tokens = image_features.shape[1]  # Usually 729 for TinyLLaVA
+
+    # Create attention mask for first forward pass
+    text_len = input_ids.shape[1]
+    mask = create_attention_mask(text_len, num_image_tokens)
+    mx.eval(mask)
 
     # Create KV cache
     cache = make_kv_cache(model.language_model)
 
     # First forward pass (process prompt + image)
     # Model handles combining image and text embeddings
-    logits, _ = model(input_ids, pixel_values=None, image_features=image_features, cache=cache)
+    logits, _ = model(
+        input_ids, pixel_values=None, image_features=image_features, mask=mask, cache=cache
+    )
     logits = logits[:, -1, :]
     # Evaluate to prevent computation graph accumulation
     mx.eval(logits)
@@ -274,7 +415,8 @@ def stream_generate(
         y = mx.array([[token]])
         # Evaluate input array
         mx.eval(y)
-        logits, _ = model(y, pixel_values=None, image_features=None, cache=cache)
+        # No mask needed for single token (or use None, MLX handles it)
+        logits, _ = model(y, pixel_values=None, image_features=None, mask=None, cache=cache)
         logits = logits[:, -1, :]
         # Evaluate to prevent computation graph accumulation
         mx.eval(logits)

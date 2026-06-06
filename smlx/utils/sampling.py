@@ -54,23 +54,33 @@ def sample(
         >>> logits = model(tokens)
         >>> next_token = sample(logits, temperature=0.7, top_p=0.9)
     """
+    # CRITICAL: bfloat16 workaround for quantized models
+    # bfloat16 can cause kernel loading issues with cumsum operations
+    # Reference: mlx-vlm/mlx_vlm/sample_utils.py:15-18
+    if logits.dtype == mx.bfloat16:
+        logits = logits.astype(mx.float32)
+
     # Greedy sampling (deterministic)
     if temperature == 0.0:
         return mx.argmax(logits, axis=-1)
 
+    # Convert to log probabilities for numerical stability
+    # This matches mlx-lm's approach and avoids precision loss
+    logprobs = logits - mx.logsumexp(logits, keepdims=True)
+
     # Apply temperature
-    logits = logits / temperature
+    logprobs = logprobs / temperature
 
     # Top-k sampling
     if top_k > 0:
-        logits = top_k_sampling(logits, top_k)
+        logprobs = top_k_sampling(logprobs, top_k)
 
     # Top-p (nucleus) sampling
     if top_p < 1.0:
-        logits = top_p_sampling(logits, top_p)
+        logprobs = top_p_sampling(logprobs, top_p)
 
     # Sample from filtered distribution
-    return mx.random.categorical(logits)
+    return mx.random.categorical(logprobs)
 
 
 def sample_token(
@@ -126,12 +136,13 @@ def make_sampler(
         min_tokens_to_keep: Minimum tokens to keep in min_p sampling
 
     Returns:
-        Sampling function that takes logits and returns token IDs
+        Sampling function that takes log probabilities and returns token IDs
 
     Example:
         >>> sampler = make_sampler(temp=0.7, top_p=0.9, min_p=0.05)
         >>> for step in generation_loop:
-        ...     token = sampler(logits)
+        ...     logprobs = logits - mx.logsumexp(logits, keepdims=True)
+        ...     token = sampler(logprobs)
     """
     # Greedy sampling
     if temp == 0:
@@ -150,52 +161,52 @@ def make_sampler(
         sampling_methods.append(lambda x: top_k_sampling(x, top_k))
 
     # Apply sampling methods in chain
-    def sampler(logits):
+    def sampler(logprobs):
         for method in sampling_methods:
-            logits = method(logits)
-        return categorical_sampling(logits, temp)
+            logprobs = method(logprobs)
+        return categorical_sampling(logprobs, temp)
 
     return sampler
 
 
 @_maybe_compile
-def top_k_sampling(logits: mx.array, top_k: int) -> mx.array:
+def top_k_sampling(logprobs: mx.array, top_k: int) -> mx.array:
     """
     Apply top-k sampling by masking all but the k highest probability tokens.
 
     Args:
-        logits: Log probabilities or logits [vocab_size]
+        logprobs: Log probabilities [vocab_size]
         top_k: Number of top tokens to keep
 
     Returns:
-        Filtered logits with -inf for tokens outside top-k
+        Filtered log probabilities with -inf for tokens outside top-k
 
     Example:
-        >>> filtered_logits = top_k_sampling(logits, top_k=50)
-        >>> token = mx.random.categorical(filtered_logits)
+        >>> filtered_logprobs = top_k_sampling(logprobs, top_k=50)
+        >>> token = mx.random.categorical(filtered_logprobs)
     """
-    vocab_size = logits.shape[-1]
+    vocab_size = logprobs.shape[-1]
 
     if not isinstance(top_k, int) or top_k <= 0:
         raise ValueError(f"`top_k` must be a positive integer, got {top_k}")
 
     # If top_k >= vocab_size, keep all tokens (no filtering)
     if top_k >= vocab_size:
-        return logits
+        return logprobs
 
     # Find the k-th largest value
-    mask_idx = mx.argpartition(-logits, kth=top_k - 1, axis=-1)[..., top_k:]
+    mask_idx = mx.argpartition(-logprobs, kth=top_k - 1, axis=-1)[..., top_k:]
 
     # Mask all tokens outside top-k with -inf
-    masked_logits = mx.put_along_axis(
-        logits, mask_idx, mx.array(-float("inf"), logits.dtype), axis=-1
+    masked_logprobs = mx.put_along_axis(
+        logprobs, mask_idx, mx.array(-float("inf"), logprobs.dtype), axis=-1
     )
 
-    return masked_logits
+    return masked_logprobs
 
 
 @_maybe_compile
-def top_p_sampling(logits: mx.array, top_p: float) -> mx.array:
+def top_p_sampling(logprobs: mx.array, top_p: float) -> mx.array:
     """
     Apply top-p (nucleus) sampling by keeping tokens with cumulative probability <= top_p.
 
@@ -203,18 +214,24 @@ def top_p_sampling(logits: mx.array, top_p: float) -> mx.array:
     distribution, which is more adaptive than fixed top-k sampling.
 
     Args:
-        logits: Log probabilities or logits [vocab_size]
+        logprobs: Log probabilities [vocab_size]
         top_p: Cumulative probability threshold (0-1)
 
     Returns:
-        Filtered logits with -inf for tokens outside nucleus
+        Filtered log probabilities with -inf for tokens outside nucleus
 
     Example:
-        >>> filtered_logits = top_p_sampling(logits, top_p=0.9)
-        >>> token = mx.random.categorical(filtered_logits)
+        >>> filtered_logprobs = top_p_sampling(logprobs, top_p=0.9)
+        >>> token = mx.random.categorical(filtered_logprobs)
     """
-    # Convert to probabilities
-    probs = mx.softmax(logits, axis=-1)
+    # CRITICAL: bfloat16 workaround for quantized models
+    # Prevents "unable to load kernel contiguous_scan_inclusive_sum_bfloat16_bfloat16" error
+    # Reference: mlx-vlm/mlx_vlm/sample_utils.py:15-18
+    if logprobs.dtype == mx.bfloat16:
+        logprobs = logprobs.astype(mx.float32)
+
+    # Convert log probabilities to probabilities
+    probs = mx.exp(logprobs)
 
     # Sort in ascending order to compute cumulative sum
     sorted_indices = mx.argsort(probs, axis=-1)
@@ -237,14 +254,14 @@ def top_p_sampling(logits: mx.array, top_p: float) -> mx.array:
     # Mask tokens with cumulative probability > threshold
     return mx.where(
         cumulative_probs > 1 - top_p,
-        logits,
+        logprobs,
         -float("inf"),
     )
 
 
 @_maybe_compile
 def min_p_sampling(
-    logits: mx.array,
+    logprobs: mx.array,
     min_p: float,
     min_tokens_to_keep: int = 1,
 ) -> mx.array:
@@ -256,17 +273,17 @@ def min_p_sampling(
     is more aggressive.
 
     Args:
-        logits: Log probabilities or logits [vocab_size]
+        logprobs: Log probabilities [vocab_size]
         min_p: Minimum probability threshold scaled by top token (0-1)
         min_tokens_to_keep: Minimum number of tokens to keep
 
     Returns:
-        Filtered logits with -inf for tokens below threshold
+        Filtered log probabilities with -inf for tokens below threshold
 
     Example:
         >>> # Keep tokens with prob >= 0.05 * top_token_prob
-        >>> filtered_logits = min_p_sampling(logits, min_p=0.05)
-        >>> token = mx.random.categorical(filtered_logits)
+        >>> filtered_logprobs = min_p_sampling(logprobs, min_p=0.05)
+        >>> token = mx.random.categorical(filtered_logprobs)
     """
     if not (0 <= min_p <= 1.0):
         raise ValueError(f"`min_p` must be in [0, 1], got {min_p}")
@@ -275,21 +292,21 @@ def min_p_sampling(
         raise ValueError(f"`min_tokens_to_keep` must be positive int, got {min_tokens_to_keep}")
 
     # Sort by probability (descending)
-    sorted_indices = mx.argsort(-logits, axis=-1)
-    sorted_logits = mx.take_along_axis(logits, sorted_indices, axis=-1)
+    sorted_indices = mx.argsort(-logprobs, axis=-1)
+    sorted_logprobs = mx.take_along_axis(logprobs, sorted_indices, axis=-1)
 
     # Get top probability (in log space)
-    top_logit = sorted_logits[:, 0:1]
+    top_logprob = sorted_logprobs[:, 0:1]
 
     # Calculate min_p threshold in log space: log(min_p * top_prob) = log(top_prob) + log(min_p)
-    scaled_min_p = top_logit + math.log(min_p)
+    scaled_min_p = top_logprob + math.log(min_p)
 
     # Mask tokens below threshold (but keep minimum number)
-    tokens_to_remove = sorted_logits < scaled_min_p
+    tokens_to_remove = sorted_logprobs < scaled_min_p
     tokens_to_remove[..., :min_tokens_to_keep] = False
 
     # Apply mask
-    selected_logits = mx.where(tokens_to_remove, -float("inf"), sorted_logits)
+    selected_logprobs = mx.where(tokens_to_remove, -float("inf"), sorted_logprobs)
 
     # Rearrange back to original order
     inverse_indices = mx.put_along_axis(
@@ -299,9 +316,9 @@ def min_p_sampling(
         axis=-1,
     )
 
-    original_order_logits = mx.take_along_axis(selected_logits, inverse_indices, axis=-1)
+    original_order_logprobs = mx.take_along_axis(selected_logprobs, inverse_indices, axis=-1)
 
-    return original_order_logits
+    return original_order_logprobs
 
 
 def categorical_sampling(logits: mx.array, temp: float) -> mx.array:

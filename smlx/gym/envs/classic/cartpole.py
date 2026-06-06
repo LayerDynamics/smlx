@@ -41,8 +41,8 @@ class CartPoleEnv(MLXEnv):
         +1 for every step the pole remains upright
 
     Episode Termination:
-        - Pole angle > ±12 degrees
-        - Cart position > ±2.4
+        - Pole angle > Â±12 degrees
+        - Cart position > Â±2.4
         - Episode length > 500 steps
 
     Example:
@@ -194,7 +194,7 @@ class CartPoleEnv(MLXEnv):
             x, _, theta, _ = self.state
             print(
                 f"Cart position: {float(x):.2f}, "
-                f"Pole angle: {float(theta) * 180 / np.pi:.2f}°"
+                f"Pole angle: {float(theta) * 180 / np.pi:.2f}Â°"
             )
 
     def close(self):

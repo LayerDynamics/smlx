@@ -17,7 +17,8 @@ import mlx.core as mx
 import time
 
 from smlx.models.SmolLM2_135M import load, generate
-from smlx.quant import quantize_gptq, apply_lora, merge_lora
+from smlx.quant import gptq_quantize, apply_lora, merge_lora
+from smlx.quant.utils import load_calibration_data
 
 
 def main():
@@ -33,11 +34,21 @@ def main():
     original_params = sum(p.size for _, p in model.parameters().items() if hasattr(p, 'size'))
     print(f"   Original parameters: {original_params:,}")
 
+    # Load calibration data for quantization
+    print("\n2. Loading calibration data...")
+    calibration_data = load_calibration_data(
+        tokenizer=tokenizer,
+        num_samples=128,
+        sequence_length=512,
+        verbose=True
+    )
+    print(f"   ✅ Loaded calibration data: {calibration_data.shape}")
+
     # Test prompt
     test_prompt = "Explain what QLoRA is:"
 
     # Baseline
-    print("\n2. Baseline (FP16) generation:")
+    print("\n3. Baseline (FP16) generation:")
     start = time.time()
     fp16_output = generate(
         model=model,
@@ -52,9 +63,10 @@ def main():
     print(f"   Output: {fp16_output[:80]}...")
 
     # Step 1: Quantize base model
-    print("\n3. Step 1: Quantizing base model to 4-bit...")
-    quantized_model = quantize_gptq(
+    print("\n4. Step 1: Quantizing base model to 4-bit...")
+    quantized_model = gptq_quantize(
         model=model,
+        calibration_data=calibration_data,  # Required for GPTQ
         bits=4,
         group_size=64,
     )
@@ -62,7 +74,7 @@ def main():
     print(f"   Memory: ~{original_params // 4:,} effective params (4x reduction)")
 
     # Step 2: Add LoRA adapters
-    print("\n4. Step 2: Adding LoRA adapters...")
+    print("\n5. Step 2: Adding LoRA adapters...")
     qlora_model = apply_lora(
         model=quantized_model,
         rank=8,
@@ -80,7 +92,7 @@ def main():
     print(f"   Trainable ratio: {trainable_params / original_params * 100:.2f}%")
 
     # QLoRA generation
-    print("\n5. QLoRA generation:")
+    print("\n6. QLoRA generation:")
     start = time.time()
     qlora_output = generate(
         model=qlora_model,
@@ -95,19 +107,19 @@ def main():
     print(f"   Output: {qlora_output[:80]}...")
 
     # Compare configurations
-    print("\n6. Memory Comparison:")
+    print("\n7. Memory Comparison:")
     print(f"   FP16 baseline: ~{original_params * 2 / 1e6:.1f} MB")
     print(f"   4-bit quantized: ~{original_params * 0.5 / 1e6:.1f} MB (4x smaller)")
     print(f"   QLoRA (4-bit + LoRA): ~{(original_params * 0.5 + trainable_params * 2) / 1e6:.1f} MB")
     print(f"   Memory savings: ~{(1 - (original_params * 0.5 + trainable_params * 2) / (original_params * 2)) * 100:.1f}%")
 
     # Speed comparison
-    print("\n7. Speed Comparison:")
+    print("\n8. Speed Comparison:")
     print(f"   FP16: {fp16_time:.2f}s")
     print(f"   QLoRA: {qlora_time:.2f}s ({qlora_time / fp16_time:.2f}x)")
 
     # Show QLoRA advantages
-    print("\n8. QLoRA Advantages:")
+    print("\n9. QLoRA Advantages:")
     print("   ✓ 4x memory reduction from quantization")
     print("   ✓ Only ~0.5% parameters trainable (LoRA)")
     print("   ✓ Base model frozen and compressed")
@@ -116,7 +128,7 @@ def main():
     print("   ✓ Perfect for M4 Macs with unified memory")
 
     # Real-world scenario
-    print("\n9. Real-world Example: Fine-tuning for Code Generation")
+    print("\n10. Real-world Example: Fine-tuning for Code Generation")
     print("   Scenario: Adapt SmolLM2 for Python code completion")
 
     code_prompt = "def fibonacci(n):"

@@ -67,10 +67,20 @@ def synthesize(
     if audio.max() > 0:
         audio = audio / np.abs(audio).max()
 
-    print(
-        f"\n✓ Generated {len(audio)/sample_rate:.2f}s of audio (HiFi-GAN V3 vocoder)"
-    )
-    print("  Tip: Load pre-trained weights for best quality (see load_vocoder_weights)")
+    duration_s = len(audio) / sample_rate
+    if getattr(model, "weights_loaded", False):
+        print(
+            f"\n✓ Generated {duration_s:.2f}s of audio (HiFi-GAN V3 vocoder)"
+        )
+    else:
+        # Honesty: with random-init weights the forward pass produces noise,
+        # not intelligible speech. Do not present it as a successful synthesis.
+        print(
+            f"\n⚠ Produced {duration_s:.2f}s of audio from UNINITIALIZED (random) "
+            "weights — this is noise, not speech."
+        )
+        print("  Load pre-trained weights to synthesize real audio "
+              "(see load_weights / load_vocoder_weights).")
 
     return audio
 

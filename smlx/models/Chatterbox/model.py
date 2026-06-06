@@ -497,6 +497,10 @@ class Chatterbox(nn.Module):
         super().__init__()
         self.config = config
 
+        # Set True by the loader once real pre-trained model + vocoder weights
+        # are applied. While False, synthesis output is noise, not speech.
+        self.weights_loaded = False
+
         print("Note: Using reference Chatterbox architecture with HiFi-GAN vocoder")
         print("Production deployment requires:")
         print("  1. Pre-trained voice cloning TTS weights")

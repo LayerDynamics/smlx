@@ -344,7 +344,7 @@ def evaluate_perplexity(
 
 
 def list_datasets():
-    """Print available evaluation datasets."""
+    """Print available evaluation datasets and return list of dataset names."""
     print("\nAvailable Evaluation Datasets:")
     print("=" * 70)
     for name, config in EVAL_DATASETS.items():
@@ -355,6 +355,7 @@ def list_datasets():
             print(f"  Config: {config['name']}")
     print("\nYou can also use any HuggingFace dataset path.")
     print("=" * 70)
+    return list(EVAL_DATASETS.keys())
 
 
 def main():

@@ -208,9 +208,10 @@ def _refine_with_gradients(
 
     optimizer = optim.Adam(learning_rate=learning_rate)
 
-    # Define loss function: KL divergence from teacher
+    # Define loss function: KL divergence (primary) + a small MSE term, matching
+    # the distillation objective. This is what is actually optimized.
     def loss_fn(model_params, batch_idx):
-        """Compute KL divergence loss for a batch."""
+        """Compute the distillation loss (KL + 0.1*MSE) for a batch."""
         # Get batch
         start_idx = batch_idx * batch_size
         end_idx = min(start_idx + batch_size, len(calibration_data))
@@ -220,10 +221,11 @@ def _refine_with_gradients(
         # Forward pass
         student_output = model(batch)
 
-        # KL divergence loss
+        # Distillation loss: KL divergence weighted with a small MSE term.
         kl_loss = _kl_divergence(teacher_batch, student_output, temperature)
+        mse_loss = _mse_loss(teacher_batch, student_output)
 
-        return kl_loss
+        return kl_loss + 0.1 * mse_loss
 
     # Create value and gradient function
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
@@ -239,8 +241,10 @@ def _refine_with_gradients(
             # Compute loss and gradients
             loss, grads = loss_and_grad_fn(model.parameters(), batch_idx)
 
-            # Update only scales and biases (filter gradients)
-            # The optimizer will update model.parameters() based on grads
+            # Apply the optimizer step. Only the QuantizedLinear scales and
+            # biases are differentiable (the packed integer weights are not), so
+            # gradients are non-zero only for those tensors and they are the only
+            # parameters that actually move — no explicit gradient filtering needed.
             optimizer.update(model, grads)
 
             # Evaluate to materialize updates
@@ -379,42 +383,13 @@ def dwq_quantize(
     model.update_modules(tree_unflatten(linear_layers))
     print(f"  Quantized {len(linear_layers)} Linear layers")
 
-    # Step 4: Iterative refinement via distillation
-    print("Step 4: Refining weights with knowledge distillation...")
-
-    for iteration in range(num_iterations):
-        print(f"  Iteration {iteration + 1}/{num_iterations}")
-
-        total_kl_loss = 0.0
-        total_mse_loss = 0.0
-        num_batches = 0
-
-        for start_idx in range(0, len(calibration_data), batch_size):
-            batch = calibration_data[start_idx : start_idx + batch_size]
-            teacher_batch = teacher_outputs[start_idx : start_idx + batch_size]
-
-            # Forward pass through student
-            student_output = model(batch)
-
-            # Compute losses
-            kl_loss = _kl_divergence(teacher_batch, student_output, temperature)
-            mse_loss = _mse_loss(teacher_batch, student_output)
-            _total_loss = kl_loss + 0.1 * mse_loss  # Weight MSE less (unused for now)
-
-            # Accumulate losses for monitoring
-            total_kl_loss += kl_loss.item()
-            total_mse_loss += mse_loss.item()
-            num_batches += 1
-
-            mx.eval(student_output)
-
-        avg_kl = total_kl_loss / num_batches
-        avg_mse = total_mse_loss / num_batches
-        print(f"    KL divergence: {avg_kl:.6f}, MSE: {avg_mse:.6f}")
-
-    # Step 4.5: Gradient-based refinement of quantization scales and biases
+    # Step 4: Refine the quantized model via knowledge distillation from the
+    # teacher outputs. This is real gradient-based optimization of the
+    # quantization scales/biases (the only differentiable parameters of a
+    # QuantizedLinear); the packed integer weights stay fixed. _refine_with_gradients
+    # reports the per-iteration distillation loss as it actually decreases.
     if num_iterations > 0:
-        print("\nRefining quantized model with gradient-based optimization...")
+        print("Step 4: Refining weights with knowledge distillation (gradient-based)...")
         model = _refine_with_gradients(
             model,
             teacher_outputs,
@@ -424,6 +399,8 @@ def dwq_quantize(
             learning_rate,
             batch_size,
         )
+    else:
+        print("Step 4: Skipping refinement (num_iterations=0)")
 
     # Step 5: Final quantization (already done in step 3)
     print("✓ DWQ quantization complete!")

@@ -135,8 +135,7 @@ Repository = "https://github.com/LayerDynamics/smlx"
 Issues = "https://github.com/LayerDynamics/smlx/issues"
 
 [project.scripts]
-# Add CLI commands here as they're implemented
-# smlx = "smlx.main:main"
+smlx = "smlx.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -173,10 +173,27 @@ def load(
         # Sanitize weights to match model parameter names
         sanitized_weights = NanoVLM.sanitize(weights)
 
-        # Update model with sanitized weights (strict=False allows missing/extra parameters)
-        # nanoVLM vision model doesn't use position embeddings in pretrained weights
-        model.update(sanitized_weights, strict=False)
-        print("✓ Weights loaded (some parameters randomly initialized)")
+        # Special handling for weight shapes
+        for weight_name in list(sanitized_weights.keys()):
+            weight_value = sanitized_weights[weight_name]
+
+            # 1. Position embedding: (1, num_positions, embed_dim) -> (num_positions, embed_dim)
+            if 'position_embedding.weight' in weight_name:
+                if len(weight_value.shape) == 3 and weight_value.shape[0] == 1:
+                    sanitized_weights[weight_name] = weight_value.squeeze(0)  # Remove batch dimension
+
+            # 2. Patch embedding Conv2d: PyTorch (out, in, h, w) -> MLX (out, h, w, in)
+            if 'patch_embedding.weight' in weight_name and len(weight_value.shape) == 4:
+                # Transpose from (out_channels, in_channels, height, width) to (out_channels, height, width, in_channels)
+                sanitized_weights[weight_name] = mx.transpose(weight_value, (0, 2, 3, 1))
+
+        # Load weights using MLX's built-in method (same as mlx-vlm, TinyLLaVA, Moondream2)
+        # This is more robust than manual setattr approach
+        # Use strict=False to allow missing/extra weights (sanitize may not catch everything)
+        unmatched = model.load_weights(list(sanitized_weights.items()), strict=False)
+        if unmatched:
+            print(f"Warning: {len(unmatched)} unmatched weights (expected for nanoVLM)")
+        print("✓ Weights loaded successfully")
     else:
         print("Warning: Model initialized with random weights")
 
@@ -187,17 +204,41 @@ def load(
     image_processor = create_image_processor(config.vision_config.image_size)
 
     # Load tokenizer
-    try:
-        from transformers import AutoTokenizer
+    # First, try to use the tokenizer specified in config
+    tokenizer = None
+    tokenizer_path = None
 
-        tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-    except Exception as e:
-        print(f"Warning: Could not load tokenizer: {e}")
-        print("Using default tokenizer...")
-        # Fallback to SmolLM2 tokenizer
-        from transformers import AutoTokenizer
+    # Check if config specifies a tokenizer
+    if hasattr(config, 'lm_tokenizer') and config.lm_tokenizer:
+        tokenizer_path = config.lm_tokenizer
+        print(f"Using tokenizer from config: {tokenizer_path}")
 
-        tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    # Try loading tokenizer
+    from transformers import AutoTokenizer
+
+    if tokenizer_path:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+            print(f"✓ Loaded tokenizer: {tokenizer_path}")
+        except Exception as e:
+            print(f"Warning: Could not load specified tokenizer {tokenizer_path}: {e}")
+
+    # If no tokenizer loaded yet, try from model_path
+    if tokenizer is None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+            print(f"✓ Loaded tokenizer from model path")
+        except Exception as e:
+            print(f"Warning: Could not load tokenizer from model path: {e}")
+
+    # Final fallback - raise error instead of using wrong tokenizer
+    if tokenizer is None:
+        raise ValueError(
+            "Could not load tokenizer for nanoVLM!\n"
+            "Please ensure the model config specifies 'lm_tokenizer' field,\n"
+            "or that the model directory contains a valid tokenizer.\n"
+            "Using an incorrect tokenizer will cause gibberish outputs."
+        )
 
     processor = Processor(image_processor, tokenizer)
 

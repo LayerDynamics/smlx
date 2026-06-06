@@ -2,14 +2,14 @@
 # Copyright © 2025 SMLX Project
 
 """
-SmolVLM-256M-Instruct Model Implementation.
+SmolVLM-500M-Instruct Model Implementation.
 
 A vision-language model combining:
-- SigLIP-SO400M vision encoder (1152 hidden size)
-- SmolLM2-135M language model (576 hidden size)
+- SigLIP 93M vision encoder (768 hidden size, 12 layers)
+- SmolLM2-360M language model (960 hidden size, 32 layers)
 - Idefics3 connector with pixel shuffle
 
-Total parameters: ~256M
+Total parameters: ~500M
 """
 
 import re

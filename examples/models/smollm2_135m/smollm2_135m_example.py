@@ -25,11 +25,11 @@ from smlx.models.SmolLM2_135M import (
 
 # Memory management imports
 from smlx.config.model_profiles import auto_select_params
+from smlx.utils.debug import print_memory_state
 from smlx.utils.degradation import with_graceful_degradation
 from smlx.utils.memory import (
     get_active_memory_gb,
     get_cache_memory_gb,
-    print_memory_state,
     smart_cleanup,
 )
 from smlx.utils.robust import robust_generate

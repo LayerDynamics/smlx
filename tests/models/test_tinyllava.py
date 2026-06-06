@@ -566,8 +566,9 @@ class TestImageProcessing:
         # Should have default SigLIP normalization values
         assert hasattr(processor, "image_mean")
         assert hasattr(processor, "image_std")
-        assert len(processor.image_mean) == 3
-        assert len(processor.image_std) == 3
+        # image_mean and image_std are reshaped to (1, 1, 3) for broadcasting
+        assert processor.image_mean.shape == (1, 1, 3)
+        assert processor.image_std.shape == (1, 1, 3)
 
 
 # ============================================================================

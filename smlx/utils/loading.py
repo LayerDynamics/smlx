@@ -550,14 +550,25 @@ def verify_weights(
     weights: dict[str, mx.array],
     expected_keys: list[str] | None = None,
     model: Any | None = None,
+    check_integrity: bool = True,
+    check_distribution: bool = True,
 ) -> bool:
     """
     Verify that weights dictionary is complete and valid.
+
+    Enhanced with integrity checks to detect:
+    - Missing or extra keys
+    - Invalid data types
+    - NaN or Inf values
+    - All-zero or constant weights
+    - Abnormal weight distributions
 
     Args:
         weights: dictionary of weights to verify
         expected_keys: Optional list of expected keys
         model: Optional model to check against
+        check_integrity: Enable integrity checks (NaN, Inf, etc.)
+        check_distribution: Enable distribution checks (all-zero, constant, etc.)
 
     Returns:
         True if weights are valid
@@ -568,6 +579,10 @@ def verify_weights(
     Example:
         >>> verify_weights(weights, expected_keys=["model.embed_tokens.weight", ...])
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     # Check that weights is a dict
     if not isinstance(weights, dict):
         raise ValueError(f"weights must be a dict, got {type(weights)}")
@@ -594,7 +609,187 @@ def verify_weights(
             raise ValueError(f"Missing keys in weights: {missing}")
         if unexpected:
             # Unexpected keys are just a warning, not an error
-            print(f"Warning: Unexpected keys in weights: {unexpected}")
+            logger.warning(f"Unexpected keys in weights: {unexpected}")
+
+    # Enhanced integrity checks
+    if check_integrity or check_distribution:
+        problematic_layers = []
+
+        for key, weight in weights.items():
+            # Check for NaN or Inf
+            if check_integrity:
+                weight_np = weight.__array__() if hasattr(weight, '__array__') else weight
+                if hasattr(weight_np, 'flatten'):
+                    import numpy as np
+
+                    if np.any(np.isnan(weight_np)):
+                        raise ValueError(f"Weight '{key}' contains NaN values")
+                    if np.any(np.isinf(weight_np)):
+                        raise ValueError(f"Weight '{key}' contains Inf values")
+
+            # Check for pathological weights
+            if check_distribution:
+                weight_np = weight.__array__() if hasattr(weight, '__array__') else weight
+
+                # Check if all zeros
+                if hasattr(weight_np, 'sum'):
+                    import numpy as np
+
+                    if np.all(weight_np == 0):
+                        problematic_layers.append(f"{key}: all zeros")
+
+                    # Check if all same value (constant)
+                    elif np.all(weight_np == weight_np.flat[0]):
+                        problematic_layers.append(f"{key}: constant value ({weight_np.flat[0]})")
+
+                    # Check for abnormally small variance (may indicate initialization issue)
+                    elif weight_np.size > 1:
+                        std = np.std(weight_np)
+                        if std < 1e-8:
+                            problematic_layers.append(
+                                f"{key}: very low variance (std={std:.2e})"
+                            )
+
+        if problematic_layers:
+            warning_msg = "Found potentially problematic weights:\n  - " + "\n  - ".join(
+                problematic_layers[:5]
+            )
+            if len(problematic_layers) > 5:
+                warning_msg += f"\n  ... and {len(problematic_layers) - 5} more"
+            logger.warning(warning_msg)
+
+    return True
+
+
+def check_tokenizer_compatibility(
+    tokenizer: Any, model_config: dict[str, Any] | None = None
+) -> bool:
+    """
+    Check if tokenizer is compatible with model.
+
+    Verifies:
+    - Tokenizer has required attributes
+    - Vocab size matches model config (if provided)
+    - Special tokens are defined
+
+    Args:
+        tokenizer: Tokenizer to check
+        model_config: Optional model configuration
+
+    Returns:
+        True if compatible
+
+    Raises:
+        ValueError: If incompatible
+
+    Example:
+        >>> check_tokenizer_compatibility(tokenizer, model_config)
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Check required attributes
+    required_attrs = ['encode', 'decode']
+    for attr in required_attrs:
+        if not hasattr(tokenizer, attr):
+            raise ValueError(f"Tokenizer missing required attribute: {attr}")
+
+    # Check vocab size if config provided
+    if model_config is not None:
+        if 'vocab_size' in model_config:
+            expected_vocab_size = model_config['vocab_size']
+
+            if hasattr(tokenizer, 'vocab_size'):
+                actual_vocab_size = tokenizer.vocab_size
+                if actual_vocab_size != expected_vocab_size:
+                    logger.warning(
+                        f"Tokenizer vocab size mismatch: "
+                        f"expected {expected_vocab_size}, got {actual_vocab_size}"
+                    )
+
+    # Check for common special tokens
+    common_special_tokens = ['eos_token', 'bos_token', 'pad_token']
+    missing_tokens = []
+
+    for token_name in common_special_tokens:
+        if not hasattr(tokenizer, token_name) or getattr(tokenizer, token_name) is None:
+            missing_tokens.append(token_name)
+
+    if missing_tokens:
+        logger.info(f"Tokenizer missing special tokens: {missing_tokens}")
+
+    return True
+
+
+def verify_model_integrity(
+    model: Any,
+    weights: dict[str, mx.array] | None = None,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Comprehensive model integrity check.
+
+    Verifies that model is properly loaded and initialized by checking:
+    - All parameters are present
+    - Weights are loaded (not random initialization)
+    - Architecture matches configuration
+    - No NaN or Inf in parameters
+
+    Args:
+        model: Model to verify
+        weights: Optional weights that were loaded
+        config: Optional configuration
+
+    Returns:
+        True if model is valid
+
+    Raises:
+        ValueError: If model is invalid
+
+    Example:
+        >>> verify_model_integrity(model, weights, config)
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Check model has parameters
+    try:
+        params = dict(model.named_parameters())
+    except Exception as e:
+        raise ValueError(f"Could not extract model parameters: {e}")
+
+    if not params:
+        raise ValueError("Model has no parameters")
+
+    # Check weights were loaded
+    if weights is not None:
+        verify_weights(weights, model=model, check_integrity=True, check_distribution=True)
+
+    # Check for NaN/Inf in model parameters
+    import numpy as np
+
+    for name, param in params.items():
+        param_np = param.__array__() if hasattr(param, '__array__') else param
+        if hasattr(param_np, 'flatten'):
+            if np.any(np.isnan(param_np)):
+                raise ValueError(f"Parameter '{name}' contains NaN values")
+            if np.any(np.isinf(param_np)):
+                raise ValueError(f"Parameter '{name}' contains Inf values")
+
+    # Check parameter count matches config
+    if config and 'num_parameters' in config:
+        expected_params = config['num_parameters']
+        total_params = sum(p.size for p in params.values() if hasattr(p, 'size'))
+
+        if abs(total_params - expected_params) > 0.01 * expected_params:
+            logger.warning(
+                f"Parameter count mismatch: "
+                f"expected ~{expected_params:,}, got {total_params:,}"
+            )
+
+    logger.info(f"Model integrity verified: {len(params)} parameters loaded successfully")
 
     return True
 
@@ -610,6 +805,8 @@ __all__ = [
     "detect_quantization",
     "get_quantized_layers",
     "verify_weights",
+    "check_tokenizer_compatibility",
+    "verify_model_integrity",
     "snapshot_download",
     "AutoTokenizer",
 ]

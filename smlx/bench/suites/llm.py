@@ -323,18 +323,34 @@ def _manual_generate_loop(
     max_tokens: int = 100,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    eos_token_id: Optional[Union[int, list[int]]] = None,
     **kwargs,
 ) -> list[int]:
     """
     Manual generation loop for models without generate() method.
 
-    This implements autoregressive generation manually.
+    This implements autoregressive generation manually. Generation stops early
+    when an end-of-sequence token is produced. ``eos_token_id`` may be a single
+    id or a list; when not provided it is inferred from the model's
+    ``eos_token_id`` / ``config.eos_token_id`` if available.
     """
     if not isinstance(prompt_tokens, list):
         if isinstance(prompt_tokens, mx.array):
             prompt_tokens = prompt_tokens.tolist()
         else:
             prompt_tokens = list(prompt_tokens)
+
+    # Resolve the set of end-of-sequence token ids to stop on.
+    if eos_token_id is None:
+        eos_token_id = getattr(model, "eos_token_id", None)
+        if eos_token_id is None:
+            eos_token_id = getattr(getattr(model, "config", None), "eos_token_id", None)
+    if eos_token_id is None:
+        eos_ids: set[int] = set()
+    elif isinstance(eos_token_id, int):
+        eos_ids = {eos_token_id}
+    else:
+        eos_ids = {int(t) for t in eos_token_id}
 
     tokens = prompt_tokens.copy()
 
@@ -383,11 +399,10 @@ def _manual_generate_loop(
 
         tokens.append(next_token)
 
-        # Check for EOS token (common values: 0, 1, 2)
-        # In practice, you'd get this from the tokenizer
-        # For now, we'll just generate max_tokens
-        # if next_token in [0, 1, 2]:  # potential EOS tokens
-        #     break
+        # Stop early on an end-of-sequence token so token counts reflect natural
+        # stopping rather than always running to max_tokens.
+        if eos_ids and next_token in eos_ids:
+            break
 
     return tokens
 
@@ -547,7 +562,86 @@ def benchmark_llm_streaming(
         >>> print(f"TTFT: {token_times[0]:.2f}ms")
         >>> print(f"Avg per-token: {sum(token_times[1:]) / len(token_times[1:]):.2f}ms")
     """
-    # This would require a streaming-aware implementation
-    # For now, return regular stats with empty timing list
-    stats = benchmark_llm(model, tokenizer, prompt, config, generate_fn)
-    return stats, []
+    from smlx.utils.generation import stream_generate
+
+    if config is None:
+        config = LLMBenchmarkConfig()
+
+    mx.random.seed(config.seed)
+
+    # Per-token timing requires decoding each step, so a tokenizer is mandatory.
+    if tokenizer is None:
+        raise ValueError(
+            "benchmark_llm_streaming requires a tokenizer for per-token timing."
+        )
+
+    # Resolve a text prompt (stream_generate operates on strings).
+    if isinstance(prompt, str):
+        prompt_text = prompt
+        prompt_tokens = _encode(tokenizer, prompt)
+    else:
+        prompt_tokens = list(prompt)
+        prompt_text = tokenizer.decode(prompt_tokens)
+    num_prompt_tokens = len(prompt_tokens)
+
+    stream_kwargs = {
+        "max_tokens": config.generation_tokens,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+    }
+
+    # Warmup so JIT/compile cost isn't attributed to the first measured token.
+    warmup_tokens = min(4, config.generation_tokens)
+    if warmup_tokens > 0:
+        for _ in stream_generate(
+            model, tokenizer, prompt_text,
+            max_tokens=warmup_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+        ):
+            pass
+
+    clear_cache()
+    reset_peak_memory()
+
+    # Measured run: timestamp the arrival of every generated token.
+    timestamps: list[float] = []
+    start = time.perf_counter()
+    for _piece in stream_generate(model, tokenizer, prompt_text, **stream_kwargs):
+        timestamps.append(time.perf_counter())
+
+    num_generated = len(timestamps)
+
+    # per_token_times[0] is TTFT (start -> first token); each subsequent entry is
+    # the inter-token latency. All values in milliseconds.
+    per_token_times: list[float] = []
+    if num_generated > 0:
+        per_token_times.append((timestamps[0] - start) * 1000.0)
+        for i in range(1, num_generated):
+            per_token_times.append((timestamps[i] - timestamps[i - 1]) * 1000.0)
+
+    if num_generated >= 1:
+        prompt_time = timestamps[0] - start          # prefill (incl. first token)
+        generation_time = timestamps[-1] - timestamps[0]  # decode of remaining tokens
+        decode_tokens = num_generated - 1
+    else:
+        prompt_time = time.perf_counter() - start
+        generation_time = 0.0
+        decode_tokens = 0
+
+    peak_memory_gb = mx.metal.get_peak_memory() / 1e9 if mx.metal.is_available() else 0.0
+
+    stats = create_model_stats(
+        model_name=_get_model_name(model),
+        prompt_tokens=num_prompt_tokens,
+        prompt_time=prompt_time,
+        generation_tokens=decode_tokens,
+        generation_time=generation_time,
+        peak_memory_gb=peak_memory_gb,
+        quantization=_detect_quantization(model),
+        batch_size=config.batch_size,
+        temperature=config.temperature,
+        seed=config.seed,
+    )
+
+    return stats, per_token_times

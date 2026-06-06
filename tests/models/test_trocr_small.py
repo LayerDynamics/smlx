@@ -309,56 +309,33 @@ class TestTrOCRTokenizer:
         assert tokenizer.eos_token_id == 2
         assert tokenizer.pad_token_id == 1
 
-    def test_tokenizer_fallback_encode(self):
-        """Test fallback character-level encoding."""
-        # Create tokenizer without model_name (uses fallback)
+    def test_tokenizer_encode_without_backend_raises(self):
+        """Without a real tokenizer backend, encode must fail loudly.
+
+        The old char-level (ord(c) % vocab_size) fallback produced garbage tokens
+        for TrOCR's subword vocab; it was removed in favour of a clear error.
+        """
         tokenizer = TrOCRTokenizer(vocab_size=64044)
+        with pytest.raises(RuntimeError, match="no real tokenizer backend"):
+            tokenizer.encode("Hello", add_special_tokens=False)
 
-        text = "Hello"
-        token_ids = tokenizer.encode(text, add_special_tokens=False)
-
-        # Should have character-level encoding
-        assert isinstance(token_ids, list)
-        assert len(token_ids) == len(text)
-
-    def test_tokenizer_fallback_decode(self):
-        """Test fallback character-level decoding."""
-        # Create tokenizer without model_name (uses fallback)
+    def test_tokenizer_decode_without_backend_raises(self):
+        """Without a real tokenizer backend, decode must fail loudly (no chr() garbage)."""
         tokenizer = TrOCRTokenizer(vocab_size=64044)
+        with pytest.raises(RuntimeError, match="no real tokenizer backend"):
+            tokenizer.decode([72, 101, 108, 108, 111], skip_special_tokens=True)
 
-        # ASCII characters
-        token_ids = [72, 101, 108, 108, 111]  # "Hello" in ASCII
-        text = tokenizer.decode(token_ids, skip_special_tokens=True)
-
-        # Should decode simple ASCII
-        assert isinstance(text, str)
-
-    def test_tokenizer_special_tokens(self):
-        """Test special token handling."""
+    def test_tokenizer_special_tokens_require_backend(self):
+        """Special-token handling needs a real tokenizer; encode raises without one."""
         tokenizer = TrOCRTokenizer(vocab_size=64044)
+        with pytest.raises(RuntimeError, match="no real tokenizer backend"):
+            tokenizer.encode("test", add_special_tokens=True)
 
-        # Encode with special tokens
-        token_ids_with = tokenizer.encode("test", add_special_tokens=True)
-
-        # First should be BOS, last should be EOS
-        assert token_ids_with[0] == 0  # BOS
-        assert token_ids_with[-1] == 2  # EOS
-
-        # Encode without special tokens
-        token_ids_without = tokenizer.encode("test", add_special_tokens=False)
-
-        # Should not have BOS/EOS
-        assert token_ids_without[0] != 0
-
-    def test_tokenizer_batch_decode(self):
-        """Test batch decoding."""
+    def test_tokenizer_batch_decode_without_backend_raises(self):
+        """batch_decode delegates to decode, so it also fails loudly without a backend."""
         tokenizer = TrOCRTokenizer(vocab_size=64044)
-
-        token_ids_batch = [[72, 105], [66, 121, 101]]  # ["Hi", "Bye"] in ASCII
-        texts = tokenizer.batch_decode(token_ids_batch, skip_special_tokens=True)
-
-        assert isinstance(texts, list)
-        assert len(texts) == 2
+        with pytest.raises(RuntimeError, match="no real tokenizer backend"):
+            tokenizer.batch_decode([[72, 105], [66, 121, 101]], skip_special_tokens=True)
 
 
 @pytest.mark.integration

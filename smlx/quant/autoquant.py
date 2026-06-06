@@ -138,14 +138,35 @@ def detect_hardware_capabilities() -> dict:
     except Exception:
         pass
 
-    # Check MLX version for MXFP support
-    # MXFP formats were added in MLX with mx.quantize(mode="mxfp4"/"mxfp8")
-    try:
-        # Test if MXFP quantization is available
-        test_arr = mx.random.normal((32, 32))
-        _ = mx.quantize(test_arr, group_size=32, bits=4)
-        capabilities["ocp_microscaling"] = True
-    except Exception:
+    # Probe whether the installed MLX build can actually perform MXFP
+    # microscaling quantization via the real mode="mxfp4"/"mxfp8" path. Plain
+    # affine INT quantization (mx.quantize(..., bits=4)) always succeeds and
+    # therefore says nothing about MXFP support, so it must NOT be used here.
+    #
+    # This probe determines *library* (software) support. Hardware acceleration
+    # is the chip-based `ocp_microscaling` flag set during chip detection above
+    # and is intentionally left untouched here.
+    def _mxfp_mode_supported(mode: str) -> bool:
+        try:
+            probe = mx.random.normal((32, 32))
+            result = mx.quantize(probe, mode=mode)
+            mx.eval(result[0])
+            return True
+        except Exception:
+            return False
+
+    mlx_supports_mxfp4 = _mxfp_mode_supported("mxfp4")
+    mlx_supports_mxfp8 = _mxfp_mode_supported("mxfp8")
+    capabilities["mlx_supports_mxfp4"] = mlx_supports_mxfp4
+    capabilities["mlx_supports_mxfp8"] = mlx_supports_mxfp8
+
+    # MXFP is usable iff the MLX library supports the mode. On M1/M2 this runs as
+    # software emulation (no hardware acceleration); on M3/M4 it is hardware
+    # accelerated and `ocp_microscaling` remains True from chip detection.
+    capabilities["supports_mxfp4"] = bool(mlx_supports_mxfp4)
+    capabilities["supports_mxfp8"] = bool(mlx_supports_mxfp8)
+    if not (mlx_supports_mxfp4 or mlx_supports_mxfp8):
+        # The library cannot do MXFP at all -> no microscaling on any chip.
         capabilities["ocp_microscaling"] = False
 
     return capabilities

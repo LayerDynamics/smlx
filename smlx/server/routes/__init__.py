@@ -1,4 +1,4 @@
-# Copyright © 2025 SMLX Project
+# Copyright Â© 2025 SMLX Project
 
 """
 API routes for SMLX Server.

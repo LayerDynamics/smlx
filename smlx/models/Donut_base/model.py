@@ -779,9 +779,9 @@ class DonutModel(nn.Module):
         config: DonutConfig instance
 
     Note:
-        Full Swin encoder is implemented. BART decoder placeholder will be
-        replaced in Phase 2. For production use, load pre-trained weights
-        from HuggingFace Hub.
+        Both the Swin encoder and the BART decoder are fully implemented. The
+        model runs on randomly-initialized weights until you load pre-trained
+        weights from HuggingFace Hub, which are required for meaningful output.
     """
 
     def __init__(self, config: DonutConfig):
@@ -867,8 +867,9 @@ def create_model(config: DonutConfig) -> DonutModel:
         DonutModel instance
 
     Note:
-        This creates a model with placeholder components. For production use,
-        load pre-trained weights from HuggingFace Hub using the loader module.
+        This builds the full Donut architecture (Swin encoder + BART decoder)
+        with randomly-initialized weights. Load pre-trained weights from
+        HuggingFace Hub via the loader module for meaningful results.
     """
     model = DonutModel(config)
     model.eval()

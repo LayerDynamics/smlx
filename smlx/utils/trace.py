@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright © 2025 SMLX Project
+# Copyright Â© 2025 SMLX Project
 
 """
 Performance tracing and profiling utilities for MLX models.
@@ -47,7 +47,7 @@ def trace_time(name: str = "Operation", verbose: bool = True):
         timing["elapsed"] = elapsed
 
         if verbose:
-            print(f"ñ  {name}: {elapsed:.3f}s")
+            print(f"[time] {name}: {elapsed:.3f}s")
 
 
 @contextmanager
@@ -101,14 +101,14 @@ def trace_memory(name: str = "Operation", verbose: bool = True):
         memory["mlx_delta_mb"] = mx_after - mx_before
 
         if verbose:
-            print(f"=¾ {name}:")
+            print(f"[mem] {name}:")
             print(
-                f"   RAM: {mem_before:.1f} MB ’ {mem_after:.1f} MB "
-                f"(” {memory['delta_mb']:+.1f} MB)"
+                f"   RAM: {mem_before:.1f} MB -> {mem_after:.1f} MB "
+                f"(delta {memory['delta_mb']:+.1f} MB)"
             )
             print(
-                f"   MLX: {mx_before:.1f} MB ’ {mx_after:.1f} MB "
-                f"(” {memory['mlx_delta_mb']:+.1f} MB)"
+                f"   MLX: {mx_before:.1f} MB -> {mx_after:.1f} MB "
+                f"(delta {memory['mlx_delta_mb']:+.1f} MB)"
             )
 
 
@@ -140,10 +140,10 @@ def trace_performance(name: str = "Operation", verbose: bool = True):
     perf.update(memory)
 
     if verbose:
-        print(f"=Ê {name}:")
+        print(f"[perf] {name}:")
         print(f"   Time: {timing['elapsed']:.3f}s")
-        print(f"   RAM:  ” {memory['delta_mb']:+.1f} MB")
-        print(f"   MLX:  ” {memory['mlx_delta_mb']:+.1f} MB")
+        print(f"   RAM:  delta {memory['delta_mb']:+.1f} MB")
+        print(f"   MLX:  delta {memory['mlx_delta_mb']:+.1f} MB")
 
 
 def trace_function(name: Optional[str] = None, verbose: bool = True):
@@ -158,7 +158,7 @@ def trace_function(name: Optional[str] = None, verbose: bool = True):
         ... def slow_operation():
         ...     time.sleep(1)
         >>> slow_operation()
-        ñ  slow_operation: 1.001s
+        [time] slow_operation: 1.001s
     """
 
     def decorator(func: Callable) -> Callable:
@@ -216,7 +216,7 @@ def trace_generation(name: str = "Generation", verbose: bool = True):
             gen["tokens_per_sec"] = 0
 
         if verbose:
-            print(f"<¯ {name}:")
+            print(f"[gen] {name}:")
             print(f"   Tokens: {gen['tokens']}")
             if gen["ttft"] is not None:
                 print(f"   TTFT: {gen['ttft']:.3f}s")
@@ -259,7 +259,7 @@ def trace_mlx_eval(name: str = "MLX Eval", verbose: bool = True):
         timing["elapsed"] = elapsed
 
         if verbose:
-            print(f"¡ {name}: {elapsed:.3f}s (evaluated)")
+            print(f"[mlx] {name}: {elapsed:.3f}s (evaluated)")
 
 
 class PerformanceProfiler:
@@ -304,7 +304,7 @@ class PerformanceProfiler:
             print("No traces recorded.")
             return
 
-        print("\n=Ê Performance Summary")
+        print("\n[perf] Performance Summary")
         print("=" * 70)
         print(f"{'Operation':<30} {'Time (s)':<12} {'RAM (MB)':<12} {'MLX (MB)':<12}")
         print("-" * 70)
