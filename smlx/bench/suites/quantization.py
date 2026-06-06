@@ -111,21 +111,18 @@ def estimate_model_size(model, quantization: str = "fp16") -> float:
     Returns:
         Estimated size in GB
     """
-    # Count parameters (handle nested dict structure)
-    def count_params(params):
-        count = 0
-        for v in params.values():
-            if isinstance(v, dict):
-                count += count_params(v)
-            else:
-                count += v.size
-        return count
+    # Count parameters robustly over the (possibly nested) parameter tree.
+    # tree_flatten yields every leaf array regardless of dict/list nesting.
+    from mlx.utils import tree_flatten
 
     try:
-        total_params = count_params(model.parameters())
-    except Exception:
-        # Fallback estimate
-        total_params = 135_000_000  # Assume SmolLM2-135M
+        total_params = sum(int(v.size) for _, v in tree_flatten(model.parameters()))
+    except Exception as e:
+        # Do NOT fabricate a model size here — a wrong parameter count silently
+        # corrupts every downstream memory metric. Fail loudly instead.
+        raise ValueError(
+            f"Could not count model parameters for size estimation: {e}"
+        ) from e
 
     # Bytes per parameter based on quantization
     bytes_per_param = {
@@ -171,7 +168,7 @@ def benchmark_quantized_model(
         QuantizationBenchmarkResult with metrics
     """
     try:
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models.SmolLM2_135M.generate import generate, stream_generate
     except ImportError as e:
         raise ImportError("SmolLM2_135M model required for benchmarks") from e
 
@@ -204,33 +201,47 @@ def benchmark_quantized_model(
     clear_cache()
     reset_peak_memory()
 
-    # Benchmark generation
+    # Benchmark generation with a real prefill/decode split.
+    #
+    # Stream tokens one at a time and timestamp each. The first token's arrival
+    # marks the end of prompt prefill (prefill processes all num_prompt_tokens),
+    # so:
+    #   prompt_time     = time from start to first token  (prefill)
+    #   generation_time = time spent emitting the remaining tokens (decode)
+    # No hardcoded ratios — both phases are measured directly.
+    token_pieces: list[str] = []
+    token_times: list[float] = []
     with memory_profiler() as mem:
         start_time = time.perf_counter()
-
-        output = generate(
+        for piece in stream_generate(
             model=model,
             tokenizer=tokenizer,
             prompt=test_prompt,
             max_tokens=generation_tokens,
             temperature=0.0,
-            verbose=False,
-        )
-
+        ):
+            token_times.append(time.perf_counter())
+            token_pieces.append(piece)
         end_time = time.perf_counter()
-        total_time = end_time - start_time
 
-    # Count tokens
-    output_tokens = tokenizer.encode(output)
-    num_generated = len(output_tokens) - num_prompt_tokens
+    total_time = end_time - start_time
+    num_generated = len(token_pieces)
 
-    # Estimate prompt/generation split
-    prompt_time = total_time * 0.2  # Rough estimate
-    generation_time = total_time * 0.8
+    if num_generated >= 1:
+        # Prefill = start -> first token.
+        prompt_time = token_times[0] - start_time
+        # Decode = first token -> last token (time for the remaining tokens).
+        generation_time = token_times[-1] - token_times[0]
+        decode_tokens = num_generated - 1
+    else:
+        # No tokens produced (e.g. immediate stop): attribute all time to prefill.
+        prompt_time = total_time
+        generation_time = 0.0
+        decode_tokens = 0
 
-    # Calculate throughput
+    # Calculate throughput from the measured phases.
     prompt_tps = num_prompt_tokens / prompt_time if prompt_time > 0 else 0
-    generation_tps = num_generated / generation_time if generation_time > 0 else 0
+    generation_tps = decode_tokens / generation_time if generation_time > 0 else 0
 
     result = QuantizationBenchmarkResult(
         quantization_method=quantization_method,

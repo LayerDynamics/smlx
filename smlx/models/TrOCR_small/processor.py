@@ -162,8 +162,14 @@ class TrOCRTokenizer:
                         self.vocab_size = self._tokenizer.vocab_size
 
             except Exception as e:
-                print(f"Warning: Could not load tokenizer from {tokenizer_name}: {e}")
-                print("Using placeholder tokenizer for fallback.")
+                # Fail loudly: a model_name was requested, so the caller expects a
+                # real tokenizer. Silently dropping to char-level tokenization would
+                # produce garbage OCR output that looks like success.
+                raise RuntimeError(
+                    f"Failed to load TrOCR tokenizer from '{model_name}': {e}. "
+                    "A real tokenizer is required for correct OCR; refusing to fall "
+                    "back to char-level tokenization."
+                ) from e
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         """Encode text to token IDs.
@@ -175,16 +181,13 @@ class TrOCRTokenizer:
         Returns:
             Token IDs
         """
-        if self._tokenizer:
-            return self._tokenizer.encode(text, add_special_tokens=add_special_tokens)
-
-        # Placeholder: simple character-level encoding
-        token_ids = [ord(c) % self.vocab_size for c in text]
-
-        if add_special_tokens:
-            token_ids = [self.bos_token_id] + token_ids + [self.eos_token_id]
-
-        return token_ids
+        if self._tokenizer is None:
+            raise RuntimeError(
+                "TrOCRTokenizer has no real tokenizer backend. Construct it with a "
+                "valid model_name (e.g. 'microsoft/trocr-small-printed') — char-level "
+                "encoding would produce incorrect tokens for TrOCR's subword vocab."
+            )
+        return self._tokenizer.encode(text, add_special_tokens=add_special_tokens)
 
     def decode(
         self, token_ids: Union[list[int], mx.array], skip_special_tokens: bool = True
@@ -215,28 +218,25 @@ class TrOCRTokenizer:
         else:
             token_ids_list = [int(tid) for tid in token_ids]
 
-        if self._tokenizer:
-            # Filter out any invalid token IDs that are outside vocab
-            # This prevents errors when decoding token IDs that don't exist in the vocabulary
-            valid_token_ids = [
-                tid for tid in token_ids_list
-                if 0 <= tid < self._tokenizer.vocab_size
-            ]
+        if self._tokenizer is None:
+            raise RuntimeError(
+                "TrOCRTokenizer has no real tokenizer backend. Construct it with a "
+                "valid model_name (e.g. 'microsoft/trocr-small-printed') — char-level "
+                "decoding would produce incorrect text for TrOCR's subword vocab."
+            )
 
-            if valid_token_ids:
-                return self._tokenizer.decode(
-                    valid_token_ids, skip_special_tokens=skip_special_tokens
-                )
-            else:
-                return ""
+        # Filter out any invalid token IDs that are outside vocab
+        # This prevents errors when decoding token IDs that don't exist in the vocabulary
+        valid_token_ids = [
+            tid for tid in token_ids_list
+            if 0 <= tid < self._tokenizer.vocab_size
+        ]
 
-        # Placeholder: simple character-level decoding
-        if skip_special_tokens:
-            special_tokens = {self.bos_token_id, self.eos_token_id, self.pad_token_id}
-            token_ids_list = [t for t in token_ids_list if t not in special_tokens]
-
-        text = "".join([chr(t) for t in token_ids_list if isinstance(t, int) and t < 128])
-        return text
+        if valid_token_ids:
+            return self._tokenizer.decode(
+                valid_token_ids, skip_special_tokens=skip_special_tokens
+            )
+        return ""
 
     def batch_decode(
         self, token_ids_batch: list[list[int]], skip_special_tokens: bool = True

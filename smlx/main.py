@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright © 2025 SMLX Project
+# Copyright Â© 2025 SMLX Project
 
 """
 SMLX Command-Line Interface.

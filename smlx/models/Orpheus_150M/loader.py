@@ -68,7 +68,12 @@ def load(
             print("⚠ Warning: Model initialized with random weights")
             print("   Load pre-trained weights from HuggingFace for synthesis")
     else:
+        weights_loaded = False
         print("⚠ Warning: No model path found, using random initialization")
+
+    # Record whether real pre-trained weights were loaded so downstream code
+    # (e.g. synthesize) can report honestly instead of presenting noise as speech.
+    model.weights_loaded = weights_loaded
 
     model.eval()
 

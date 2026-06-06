@@ -200,14 +200,18 @@ def quantize_model_q4_1(
         from smlx.quant import quantize_model_q4_1
 
         model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-        quantize_model_q4_1(model)  # ~7-8x compression with better quality
+        quantize_model_q4_1(model)  # applies Q4_1 precision; smaller on GGML export
         ```
 
     Notes:
         - Quantizes nn.Linear layers only (Embedding layers skipped)
+        - Applies the Q4_1 precision loss and stores the packed Q4_1 form
+          (module.weight_q4_1 / scales_q4_1 / biases_q4_1) for GGML/llama.cpp export
+        - The packed form is much smaller than FP16 *when written to a GGML file*
+        - IMPORTANT: in memory the weights are dequantized back to FP16, so this
+          does NOT reduce runtime memory (MLX has no Q4_1 inference kernel). Use
+          smlx.quant.quantize_model (mx.quantize) for real in-memory savings.
         - Better quality than Q4_0 (explicit bias term)
-        - Slightly larger than Q4_0 (20 bytes vs 18 bytes per block)
-        - Compatible with GGML/llama.cpp Q4_1 format
     """
     for _, module in model.named_modules():
         if isinstance(module, nn.Linear):

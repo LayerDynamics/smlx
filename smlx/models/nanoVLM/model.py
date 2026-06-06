@@ -15,6 +15,8 @@ Architecture:
       → Text Output
 """
 
+import logging
+import os
 from typing import Optional
 
 import mlx.core as mx
@@ -23,6 +25,19 @@ import mlx.nn as nn
 from .config import NanoVLMConfig
 from .projection import MLPProjection
 from .vision import VisionModel
+
+# Import diagnostics for debugging
+from smlx.utils.vlm_diagnostics import (
+    log_logits_distribution,
+    log_vision_features,
+)
+
+logger = logging.getLogger(__name__)
+
+# Enable debug logging if SMLX_DEBUG is set
+DEBUG = os.getenv("SMLX_DEBUG", "0") == "1"
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
 
 # Import SmolLM2 components
 try:
@@ -94,31 +109,160 @@ class NanoVLM(nn.Module):
         # Output: (1, 196, 768)
         vision_features = self.vision_model(pixel_values)
 
+        if DEBUG:
+            log_vision_features(vision_features, label="vision_encoder_output")
+
         # Project to language space
         # Input: (1, 196, 768)
         # Output: (1, 196, 576)
         projected_features = self.projection(vision_features)
 
+        if DEBUG:
+            log_vision_features(projected_features, label="projected_vision_features")
+
+        # No additional normalization - let the learned projector handle scaling
+        # Dtype will be cast when concatenating with text embeddings
+
         return projected_features
+
+    def _prepare_inputs_for_multimodal(
+        self,
+        vision_embeds: mx.array,
+        text_embeds: mx.array,
+        input_ids: mx.array,
+    ) -> mx.array:
+        """
+        Prepare multimodal inputs by replacing image tokens with vision embeddings.
+
+        Follows PaliGemma/mlx-vlm pattern:
+        1. Create masks to identify image tokens vs text tokens
+        2. Insert vision embeddings where image tokens are
+        3. Insert text embeddings where text tokens are
+
+        Args:
+            vision_embeds: Vision embeddings from encoder
+                Shape: (batch_size, num_vision_tokens, hidden_size)
+            text_embeds: Text embeddings from language model
+                Shape: (batch_size, sequence_length, hidden_size)
+            input_ids: Input token IDs (contains image_token_id markers)
+                Shape: (batch_size, sequence_length)
+
+        Returns:
+            Combined embeddings with image tokens replaced by vision features
+                Shape: (batch_size, sequence_length, hidden_size)
+        """
+        batch_size, sequence_length, embed_dim = text_embeds.shape
+        num_vision_tokens = vision_embeds.shape[1]
+
+        # Scale vision features to match text embedding magnitude
+        # Using 0.15 factor brings vision std from ~6.6 to ~1.0 (ratio ~7-9x instead of ~88x)
+        # This balances vision/text features while avoiding repetition from too-weak vision
+        vision_scale_factor = 0.15
+        vision_embeds = vision_embeds * vision_scale_factor
+
+        # Create final embedding tensor
+        final_embedding = mx.zeros((batch_size, sequence_length, embed_dim), dtype=text_embeds.dtype)
+
+        # Create masks to identify image tokens, text tokens
+        image_token_id = self.config.image_token_id
+        image_mask = input_ids == image_token_id  # Shape: (batch_size, sequence_length)
+        text_mask = input_ids != image_token_id    # Shape: (batch_size, sequence_length)
+
+        # Expand masks to match embedding dimension
+        text_mask_expanded = mx.expand_dims(text_mask, -1)  # (batch, seq, 1)
+        text_mask_expanded = mx.repeat(text_mask_expanded, embed_dim, axis=-1)  # (batch, seq, embed_dim)
+
+        image_mask_expanded = mx.expand_dims(image_mask, -1)  # (batch, seq, 1)
+        image_mask_expanded = mx.repeat(image_mask_expanded, embed_dim, axis=-1)  # (batch, seq, embed_dim)
+
+        # Insert text embeddings for text tokens
+        final_embedding = mx.where(text_mask_expanded, text_embeds, final_embedding)
+
+        # Pad vision embeddings to match sequence length and insert for image tokens
+        pad_size = sequence_length - num_vision_tokens
+        vision_embeds_padded = mx.pad(vision_embeds, ((0, 0), (0, pad_size), (0, 0)))
+
+        # Insert vision embeddings for image tokens
+        final_embedding = mx.where(image_mask_expanded, vision_embeds_padded, final_embedding)
+
+        if DEBUG:
+            # Count how many image tokens were replaced
+            num_image_tokens = int(mx.sum(image_mask))
+            logger.debug(f"Replaced {num_image_tokens} image tokens with vision embeddings")
+            # Log final embedding stats (can't use boolean indexing in MLX)
+            logger.debug(f"final_vision_embeds - mean: {float(mx.mean(vision_embeds)):.4f}, "
+                        f"std: {float(mx.std(vision_embeds)):.4f}")
+            logger.debug(f"final_text_embeds - mean: {float(mx.mean(text_embeds)):.4f}, "
+                        f"std: {float(mx.std(text_embeds)):.4f}")
+            logger.debug(f"final_combined_embeds - mean: {float(mx.mean(final_embedding)):.4f}, "
+                        f"std: {float(mx.std(final_embedding)):.4f}")
+
+        return final_embedding
+
+    def create_attention_mask(
+        self, vision_seq_len: int, text_seq_len: int
+    ) -> mx.array:
+        """
+        Create attention mask for vision+text sequence.
+
+        Vision tokens use bidirectional attention (can attend to all vision tokens).
+        Text tokens use causal attention (can only attend to previous text tokens).
+        Both can attend to all vision tokens (vision acts as a prefix).
+
+        Args:
+            vision_seq_len: Number of vision tokens
+            text_seq_len: Number of text tokens
+
+        Returns:
+            Attention mask [1, 1, total_len, total_len]
+            Values: -inf for masked positions, 0.0 for allowed positions
+        """
+        total_len = vision_seq_len + text_seq_len
+
+        # Start with all positions masked (-inf)
+        # Use float32 dtype for numerical stability
+        mask = mx.full((total_len, total_len), -float("inf"), dtype=mx.float32)
+
+        # Vision tokens can attend to ALL vision tokens (bidirectional)
+        for i in range(vision_seq_len):
+            for j in range(vision_seq_len):
+                mask[i, j] = 0.0
+
+        # Text tokens can attend to ALL vision tokens (vision is a prefix)
+        for i in range(text_seq_len):
+            for j in range(vision_seq_len):
+                mask[vision_seq_len + i, j] = 0.0
+
+        # Text tokens use causal attention (can only attend to previous text tokens)
+        for i in range(text_seq_len):
+            for j in range(i + 1):
+                mask[vision_seq_len + i, vision_seq_len + j] = 0.0
+
+        # Add batch and head dimensions: [total_len, total_len] -> [1, 1, total_len, total_len]
+        mask = mask.reshape(1, 1, total_len, total_len)
+
+        return mask
 
     def __call__(
         self,
         input_ids: mx.array,
         pixel_values: Optional[mx.array] = None,
         image_token_mask: Optional[mx.array] = None,
+        mask: Optional[mx.array] = None,
         cache: Optional[list] = None,
     ) -> mx.array:
         """
         Forward pass of nanoVLM.
 
         Args:
-            input_ids: Text token IDs
+            input_ids: Text token IDs (contains image_token_id markers for vision)
                 Shape: (batch_size, sequence_length)
             pixel_values: Image tensor (optional)
                 Shape: (batch_size, channels, height, width)
-            image_token_mask: Mask indicating image token positions
-                Shape: (batch_size, sequence_length)
-                Values: 1 for image tokens, 0 for text tokens
+            image_token_mask: Deprecated - not used with new image token replacement
+            mask: Attention mask (optional)
+                Shape: (batch_size, total_seq_len, total_seq_len)
+                Causal mask for multimodal sequence
             cache: KV cache for generation
 
         Returns:
@@ -126,48 +270,34 @@ class NanoVLM(nn.Module):
                 Shape: (batch_size, sequence_length, vocab_size)
 
         Note:
-            When pixel_values is provided, image features are injected at
-            positions indicated by image_token_mask (where value = 1).
+            Follows mlx-vlm pattern:
+            - input_ids contains image_token_id (49150) markers where images should be
+            - Model replaces these markers with actual vision embeddings
+            - Uses _prepare_inputs_for_multimodal() for replacement logic
         """
-        # Get text embeddings from language model
+        # Get text embeddings for all tokens (including image token placeholders)
         # Shape: (batch_size, seq_len, hidden_size)
         text_embeds = self.language_model.model.embed_tokens(input_ids)
 
-        # If image is provided, inject vision features
-        if pixel_values is not None and image_token_mask is not None:
+        # If image is provided, replace image tokens with vision features
+        if pixel_values is not None:
             # Encode image
             # Shape: (batch_size, num_patches, hidden_size)
+            # After pixel shuffle: (batch_size, 49, 576)
             vision_embeds = self.encode_image(pixel_values)
 
-            # Inject vision embeddings at image token positions
-            # This replaces text embeddings at positions where mask = 1
-            batch_size, seq_len, hidden_size = text_embeds.shape
-            num_patches = vision_embeds.shape[1]
+            # Cast vision features to match text embedding dtype (critical for quantized models)
+            vision_embeds = vision_embeds.astype(text_embeds.dtype)
 
-            # Create combined embeddings
-            for b in range(batch_size):
-                # Find image token positions using boolean mask
-                mask_b = image_token_mask[b] == 1
-                # Count how many image tokens
-                num_image_tokens = int(mx.sum(mask_b))
+            # Replace image tokens with vision embeddings
+            # This handles scaling internally
+            inputs_embeds = self._prepare_inputs_for_multimodal(
+                vision_embeds, text_embeds, input_ids
+            )
 
-                if num_image_tokens > 0:
-                    # Find first image token position
-                    # Convert to numpy to use argmax for finding first True
-                    import numpy as np
-                    mask_np = np.array(mask_b)
-                    start_pos = int(np.argmax(mask_np))  # First position where mask is True
-
-                    # Replace text embeddings with vision embeddings
-                    # Note: This assumes image tokens are contiguous
-                    end_pos = start_pos + num_patches
-
-                    # Ensure we don't exceed sequence length
-                    if end_pos <= seq_len:
-                        text_embeds[b, start_pos:end_pos] = vision_embeds[b]
-
-            # Use combined embeddings
-            inputs_embeds = text_embeds
+            # TODO: Create proper causal attention mask
+            # For now, let SmolLM2 create default causal mask
+            # Future: implement custom mask for vision tokens (bidirectional) + text tokens (causal)
         else:
             # Text-only mode
             inputs_embeds = text_embeds
@@ -177,12 +307,12 @@ class NanoVLM(nn.Module):
         # This requires accessing the transformer layers
         hidden_states = inputs_embeds
 
-        # Apply transformer layers
+        # Apply transformer layers with attention mask
         for i, layer in enumerate(self.language_model.model.layers):
             if cache is not None:
-                hidden_states = layer(hidden_states, cache=cache[i])
+                hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
             else:
-                hidden_states = layer(hidden_states)
+                hidden_states = layer(hidden_states, mask=mask)
 
         # Apply final norm
         hidden_states = self.language_model.model.norm(hidden_states)
@@ -193,6 +323,10 @@ class NanoVLM(nn.Module):
             logits = self.language_model.model.embed_tokens.as_linear(hidden_states)
         else:
             logits = self.language_model.lm_head(hidden_states)
+
+        if DEBUG:
+            # Log logits distribution for last token (used for generation)
+            log_logits_distribution(logits[:, -1, :], label="output_logits")
 
         return logits
 
@@ -225,7 +359,14 @@ class NanoVLM(nn.Module):
         for k, v in weights.items():
             new_key = k
 
-            # Skip position embeddings from vision model (nanoVLM doesn't use them in weights)
+            # Skip weights that don't exist in model
+            # Note: decoder.head.weight is the tied embedding weight, don't skip it
+
+            # 2. Rotary embedding inv_freq (computed on-the-fly in MLX)
+            if "rotary_embd.inv_freq" in k or "rotary.inv_freq" in k:
+                continue  # Skip - computed dynamically
+
+            # 3. Standalone position embeddings (not under patch_embedding)
             if (k.startswith("vision.") or k.startswith("vision_encoder.") or k.startswith("vision_model.")):
                 if ("position_embedding" in k or "pos_emb" in k) and "patch_embedding" not in k:
                     continue  # Skip - will be randomly initialized
@@ -239,20 +380,21 @@ class NanoVLM(nn.Module):
                     new_key = k.replace("vision.", "vision_model.", 1)
 
                 # Map patch embedding (handle both patch_emb and patch_embedding)
-                # Handle patch_embedding.position_embedding -> should NOT be changed to embeddings.patch_embedding.position_embedding
-                # The structure should be: embeddings.patch_embedding (Conv2d) and embeddings.position_embedding (Embedding)
-                # So patch_embedding.position_embedding is incorrect and should be fixed first
-                if "patch_embedding.position_embedding" in new_key:
-                    # This is wrong - position_embedding should be at same level as patch_embedding
-                    new_key = new_key.replace("patch_embedding.position_embedding", "embeddings.position_embedding")
-                elif "embeddings.patch_embedding" not in new_key:
-                    # Only add "embeddings." if not already present
-                    new_key = new_key.replace("patch_emb.", "embeddings.patch_embedding.")
-                    if "position_embedding" not in new_key:  # Don't replace if it contains position_embedding
-                        new_key = new_key.replace("patch_embedding.", "embeddings.patch_embedding.")
+                # HF has: patch_embedding.conv.weight/bias and patch_embedding.position_embedding
+                # Model expects: embeddings.patch_embedding.weight/bias and embeddings.position_embedding.weight
 
-                # Handle .embedding -> .weight for Conv2d patch embedding
-                new_key = new_key.replace("patch_embedding.embedding", "patch_embedding.weight")
+                # Handle position embedding first (needs to move up one level)
+                if "patch_embedding.position_embedding" in new_key:
+                    # Move position_embedding up to embeddings level and add .weight suffix
+                    new_key = new_key.replace("patch_embedding.position_embedding", "embeddings.position_embedding.weight")
+                # Handle patch_embedding.conv (remove .conv layer)
+                elif ".patch_embedding.conv." in new_key:
+                    new_key = new_key.replace(".patch_embedding.conv.", ".embeddings.patch_embedding.")
+                # Handle generic patch_embedding
+                elif ".patch_emb." in new_key:
+                    new_key = new_key.replace(".patch_emb.", ".embeddings.patch_embedding.")
+                elif ".patch_embedding." in new_key and ".embeddings.patch_embedding." not in new_key:
+                    new_key = new_key.replace(".patch_embedding.", ".embeddings.patch_embedding.")
 
                 # Map transformer blocks (handle both blocks.* and layers.*)
                 new_key = new_key.replace("blocks.", "encoder.layers.")
@@ -260,22 +402,62 @@ class NanoVLM(nn.Module):
                     new_key = new_key.replace(".layers.", ".encoder.layers.")
 
                 # Map attention layers
-                new_key = new_key.replace("attn.qkv.", "self_attn.qkv.")
-                new_key = new_key.replace("attn.proj.", "self_attn.proj.")
+                # First handle HF-specific naming (qkv_proj, out_proj)
+                if ".attn.qkv_proj." in new_key:
+                    new_key = new_key.replace(".attn.qkv_proj.", ".self_attn.qkv.")
+                elif ".attn.qkv." in new_key:
+                    new_key = new_key.replace(".attn.qkv.", ".self_attn.qkv.")
+
+                if ".attn.out_proj." in new_key:
+                    new_key = new_key.replace(".attn.out_proj.", ".self_attn.proj.")
+                elif ".attn.proj." in new_key:
+                    new_key = new_key.replace(".attn.proj.", ".self_attn.proj.")
 
                 # Map layer norms
                 new_key = new_key.replace("ln1.", "layer_norm1.")
                 new_key = new_key.replace("ln2.", "layer_norm2.")
                 new_key = new_key.replace("post_ln.", "post_layernorm.")
 
+                # Map final layer norm (HF uses "layer_norm", we use "post_layernorm")
+                # This must come after encoder.layers check to avoid affecting layer_norm1/2
+                if ".layer_norm." in new_key and "encoder.layers" not in new_key:
+                    new_key = new_key.replace(".layer_norm.", ".post_layernorm.")
+
                 # Map MLP layers
                 new_key = new_key.replace("mlp.fc1.", "mlp.fc1.")
                 new_key = new_key.replace("mlp.fc2.", "mlp.fc2.")
 
-            # Projection mappings (handle both vision.proj_mlp and proj_mlp)
-            if k.startswith("vision.proj_mlp.") or k.startswith("proj_mlp."):
+            # Projection mappings (handle both vision.proj_mlp, proj_mlp, and MP)
+            if k.startswith("vision.proj_mlp.") or k.startswith("proj_mlp.") or k.startswith("MP."):
                 new_key = new_key.replace("vision.proj_mlp.", "projection.")
                 new_key = new_key.replace("proj_mlp.", "projection.")
+                new_key = new_key.replace("MP.proj.", "projection.proj.")
+
+            # Language model / decoder mappings
+            # Map decoder.* to language_model.model.*
+            if k.startswith("decoder."):
+                # Special case: decoder.head.weight -> language_model.model.embed_tokens.weight
+                # (nanoVLM uses tied embeddings, so head weight is the embedding weight)
+                if k == "decoder.head.weight":
+                    new_key = "language_model.model.embed_tokens.weight"
+                else:
+                    # decoder.blocks.* -> language_model.model.layers.*
+                    new_key = new_key.replace("decoder.", "language_model.model.")
+                    new_key = new_key.replace("language_model.model.blocks.", "language_model.model.layers.")
+
+                    # Map attention layer naming
+                    # decoder uses: .attn.* but SmolLM2 uses .self_attn.*
+                    new_key = new_key.replace(".attn.", ".self_attn.")
+
+                    # Map attention projection naming
+                    # HF uses out_proj but SmolLM2 uses o_proj
+                    new_key = new_key.replace(".self_attn.out_proj.", ".self_attn.o_proj.")
+
+                    # Map norm naming
+                    new_key = new_key.replace(".norm1.", ".input_layernorm.")
+                    new_key = new_key.replace(".norm2.", ".post_attention_layernorm.")
+
+                    # MLP and projection naming should match (gate_proj, up_proj, down_proj)
 
             sanitized_weights[new_key] = v
 

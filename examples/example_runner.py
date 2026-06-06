@@ -313,13 +313,33 @@ class ExampleRunner:
         total_duration = 0.0
 
         for i, metadata in enumerate(examples, 1):
-            print(f"\n[{i}/{len(examples)}] Running {metadata.name}...")
+            # Print header with example info
+            print(f"\n{'=' * 80}")
+            print(f"[{i}/{len(examples)}] {metadata.name}")
+            print(f"{'=' * 80}")
+
+            # Print what the example does
+            if metadata.description:
+                print(f"Description: {metadata.description}")
+            print(f"Category: {metadata.category}")
+            if metadata.requires_model:
+                print(f"Model: {metadata.requires_model}")
+            print("\nRunning...")
+            print("-" * 80)
 
             result = self.run_example(metadata, timeout)
             results.append(result)
             total_duration += result.duration
 
-            # Print immediate status
+            # Print result output
+            print("-" * 80)
+            if result.output and result.output.strip():
+                # Show the actual output from the example
+                print("Output:")
+                print(result.output.strip())
+                print("-" * 80)
+
+            # Print status
             status_icon = {
                 "passed": "",
                 "failed": "",
@@ -327,10 +347,11 @@ class ExampleRunner:
                 "skipped": "�",
             }.get(result.status, "?")
 
-            print(f"{status_icon} {result.status.upper()} ({result.duration:.2f}s)")
+            print(f"\n{status_icon} {result.status.upper()} ({result.duration:.2f}s)")
 
-            if result.status == "failed" and self.verbose:
-                print(f"Error: {result.error}")
+            if result.status == "failed":
+                if result.error:
+                    print(f"\nError: {result.error}")
 
             if stop_on_failure and result.status in ("failed", "timeout"):
                 print("\nStopping due to failure (--stop-on-failure)")

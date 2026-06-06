@@ -578,8 +578,159 @@ class LoRASwitchLinear(nn.Module):
         return fused_linear
 
 
+def apply_lora(
+    model,
+    rank: int = 8,
+    alpha: float = 16.0,
+    dropout: float = 0.0,
+    target_modules: list = None,
+):
+    """
+    Apply LoRA adapters to a model by replacing Linear layers with LoRALinear.
+
+    Args:
+        model: The model to apply LoRA to
+        rank: LoRA rank (default: 8)
+        alpha: LoRA alpha scaling factor (default: 16.0)
+        dropout: LoRA dropout rate (default: 0.0)
+        target_modules: List of module types to apply LoRA to (default: [nn.Linear])
+
+    Returns:
+        Model with LoRA adapters applied
+
+    Raises:
+        TypeError: If model is not an nn.Module
+        ValueError: If rank, alpha, or dropout are invalid
+
+    Example:
+        >>> from smlx.models.SmolLM2_135M import load
+        >>> from smlx.quant import apply_lora
+        >>> model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+        >>> lora_model = apply_lora(model, rank=8, alpha=16)
+    """
+    from mlx.utils import tree_flatten, tree_unflatten
+
+    # Validate model type
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"Model must be an instance of nn.Module, got {type(model).__name__}")
+
+    # Validate rank
+    if not isinstance(rank, int) or rank <= 0:
+        raise ValueError(f"rank must be a positive integer, got {rank}")
+
+    # Validate alpha
+    if not isinstance(alpha, (int, float)) or alpha <= 0:
+        raise ValueError(f"alpha must be a positive number, got {alpha}")
+
+    # Validate dropout
+    if not isinstance(dropout, (int, float)) or dropout < 0 or dropout > 1:
+        raise ValueError(f"dropout must be in [0, 1], got {dropout}")
+
+    # Validate and set target_modules
+    if target_modules is None:
+        target_modules = {nn.Linear, nn.QuantizedLinear}
+    else:
+        if not isinstance(target_modules, (list, set, tuple)):
+            raise TypeError(
+                f"target_modules must be a list/set/tuple of module types, "
+                f"got {type(target_modules).__name__}"
+            )
+        # Validate each module type
+        for mod_type in target_modules:
+            if not isinstance(mod_type, type) or not issubclass(mod_type, nn.Module):
+                raise ValueError(
+                    f"target_modules must contain nn.Module subclasses, " f"got {mod_type}"
+                )
+        target_modules = set(target_modules)
+
+    # Calculate scale from alpha and rank
+    scale = alpha / rank
+
+    # Collect layers to replace
+    replacements = []
+    for key, module in tree_flatten(model.leaf_modules(), is_leaf=nn.Module.is_module):
+        if isinstance(module, nn.Module) and type(module) in target_modules:
+            # Create LoRA version of this layer
+            lora_layer = LoRALinear.from_base(
+                linear=module,
+                r=rank,
+                dropout=dropout,
+                scale=scale,
+            )
+            replacements.append((key, lora_layer))
+
+    # Update model with LoRA layers
+    if replacements:
+        model.update_modules(tree_unflatten(replacements))
+    else:
+        import logging
+
+        logging.warning(
+            f"No layers found matching target_modules {target_modules}. "
+            f"Model may not have any layers of the specified types, or they may "
+            f"already be LoRA layers."
+        )
+
+    return model
+
+
+def merge_lora(model, dequantize: bool = False):
+    """
+    Merge LoRA adapters back into base layers by fusing weights.
+
+    Args:
+        model: Model with LoRA adapters
+        dequantize: If True, return dequantized layers even if base is quantized
+
+    Returns:
+        Model with LoRA weights fused into base layers
+
+    Raises:
+        TypeError: If model is not an nn.Module
+        ValueError: If dequantize is not a boolean
+
+    Example:
+        >>> from smlx.quant import apply_lora, merge_lora
+        >>> lora_model = apply_lora(model, rank=8)
+        >>> # ... train lora_model ...
+        >>> fused_model = merge_lora(lora_model, dequantize=False)
+    """
+    from mlx.utils import tree_flatten, tree_unflatten
+
+    # Validate model type
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"Model must be an instance of nn.Module, got {type(model).__name__}")
+
+    # Validate dequantize parameter
+    if not isinstance(dequantize, bool):
+        raise ValueError(f"dequantize must be a boolean, got {type(dequantize).__name__}")
+
+    # Collect LoRA layers to fuse
+    fused_layers = []
+    for key, module in tree_flatten(model.leaf_modules(), is_leaf=nn.Module.is_module):
+        if isinstance(module, LoRALinear):
+            # Fuse this LoRA layer
+            fused_layer = module.fuse(dequantize=dequantize)
+            fused_layers.append((key, fused_layer))
+
+    # Update model with fused layers
+    if fused_layers:
+        model.update_modules(tree_unflatten(fused_layers))
+    else:
+        import logging
+
+        logging.warning(
+            "No LoRALinear layers found in model. Model may not have LoRA adapters "
+            "or they may have already been merged."
+        )
+
+    return model
+
+
 __all__ = [
     "LoRALinear",
     "LoRAEmbedding",
     "LoRASwitchLinear",
+    "apply_lora",
+    "merge_lora",
 ]

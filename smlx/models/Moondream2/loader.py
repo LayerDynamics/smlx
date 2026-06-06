@@ -33,6 +33,10 @@ class TokenizerWrapper:
         self.answer_token_id = 3
         self.vocab_size = tokenizer.get_vocab_size()
 
+    def __len__(self) -> int:
+        """Return vocabulary size for len() compatibility."""
+        return self.vocab_size
+
     def encode(
         self, text: str, add_special_tokens: bool = True, return_tensors: str = None
     ) -> Union[list[int], list[list[int]]]:

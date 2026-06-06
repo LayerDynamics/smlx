@@ -357,16 +357,18 @@ class TestQuantizeModel:
         """Test that quantize_model updates config with quantization info."""
         from smlx.tools.convert2mlx import quantize_model
 
-        weights = {"layer.weight": mx.random.normal((128, 128))}
+        weights = {"layer.weight": mx.random.normal((128, 128)).astype(mx.float32)}
         config = {"model_type": "test"}
 
-        # Should update config with quantization info
         result_weights, result_config = quantize_model(
             weights, config, group_size=64, bits=4
         )
 
-        # Weights should be unchanged (implementation returns as-is)
-        assert "layer.weight" in result_weights
+        # Weights must be REALLY quantized: the weight becomes packed uint32 with
+        # scales/biases siblings (not returned as-is, which was the old no-op bug).
+        assert result_weights["layer.weight"].dtype == mx.uint32
+        assert "layer.scales" in result_weights
+        assert "layer.biases" in result_weights
 
         # Config should have quantization info
         assert "quantization" in result_config

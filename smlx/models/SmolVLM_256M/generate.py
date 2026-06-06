@@ -57,7 +57,7 @@ except ImportError:
 
 
 def prepare_inputs(
-    processor: Processor,
+    processor,
     prompt: str,
     image: Optional[Union[str, Image.Image, List[Union[str, Image.Image]]]] = None,
     image_token: str = "<image>",
@@ -65,7 +65,7 @@ def prepare_inputs(
     """Prepare inputs for generation.
 
     Args:
-        processor: Combined tokenizer + image processor
+        processor: HuggingFace AutoProcessor or custom Processor
         prompt: Text prompt
         image: Optional image(s) (URL, path, or PIL Image)
         image_token: Token to use for image placeholders
@@ -73,42 +73,74 @@ def prepare_inputs(
     Returns:
         Dictionary with input_ids and pixel_values
     """
-    # Load and preprocess images if provided
-    pixel_values = None
-    if image is not None:
+    # Check if using HuggingFace AutoProcessor (has proper image token expansion)
+    # More robust detection: check for multiple HF-specific attributes
+    is_hf_processor = (
+        hasattr(processor, 'image_seq_len') and
+        hasattr(processor, 'image_processor') and
+        hasattr(processor, 'tokenizer')
+    )
+
+    if is_hf_processor and image is not None:
+        # Use HF processor - it handles image token expansion automatically
         if not isinstance(image, list):
             images = [image]
         else:
             images = image
 
-        # Load images
+        # Load images if needed
         loaded_images = [
             load_image(img) if isinstance(img, str) else img for img in images
         ]
 
-        # Preprocess images
-        processed_images = processor.image_processor(loaded_images)
-        pixel_values = mx.array(np.stack(processed_images))
-
-        # Add <image> tokens to prompt if not already present
+        # HF processor handles everything (token expansion, image processing)
+        # Ensure image token is in prompt
         if image_token not in prompt:
-            # Prepend image tokens (one per image)
             prompt = (image_token + "\n") * len(images) + prompt
 
-    # Tokenize text
-    inputs = processor.tokenizer(
-        prompt,
-        return_tensors="np",
-        padding=False,
-        truncation=False,
-    )
+        inputs = processor(text=prompt, images=loaded_images, return_tensors="np")
 
-    input_ids = mx.array(inputs["input_ids"])
+        return {
+            "input_ids": mx.array(inputs["input_ids"]),
+            "pixel_values": mx.array(inputs["pixel_values"]) if "pixel_values" in inputs else None,
+        }
+    else:
+        # Fallback to custom processor (old behavior)
+        pixel_values = None
+        if image is not None:
+            if not isinstance(image, list):
+                images = [image]
+            else:
+                images = image
 
-    return {
-        "input_ids": input_ids,
-        "pixel_values": pixel_values,
-    }
+            # Load images
+            loaded_images = [
+                load_image(img) if isinstance(img, str) else img for img in images
+            ]
+
+            # Preprocess images
+            processed_images = processor.image_processor(loaded_images)
+            pixel_values = mx.array(np.stack(processed_images))
+
+            # Add <image> tokens to prompt if not already present
+            if image_token not in prompt:
+                # Prepend image tokens (one per image)
+                prompt = (image_token + "\n") * len(images) + prompt
+
+        # Tokenize text
+        inputs = processor.tokenizer(
+            prompt,
+            return_tensors="np",
+            padding=False,
+            truncation=False,
+        )
+
+        input_ids = mx.array(inputs["input_ids"])
+
+        return {
+            "input_ids": input_ids,
+            "pixel_values": pixel_values,
+        }
 
 
 def generate(

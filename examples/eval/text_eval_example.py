@@ -57,7 +57,7 @@ def main():
 
     # Load custom dataset
     print("\n5. Loading dataset directly:")
-    dataset = load_eval_dataset("wikitext", split="test", num_samples=10)
+    dataset = load_eval_dataset("wikitext", tokenizer, split="test", num_samples=10)
 
     print(f"   Loaded {len(dataset)} samples")
     print(f"   First sample: {dataset[0]['text'][:100]}...")

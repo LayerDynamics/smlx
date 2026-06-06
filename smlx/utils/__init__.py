@@ -66,6 +66,7 @@ from .io import (
 
 # Import loading utilities
 from .loading import (
+    check_tokenizer_compatibility,
     detect_quantization,
     get_quantized_layers,
     load_sharded_weights,
@@ -75,6 +76,7 @@ from .loading import (
     sanitize_weights,
     save_sharded_weights,
     save_weights,
+    verify_model_integrity,
     verify_weights,
 )
 from .memory import (
@@ -129,6 +131,45 @@ from .quantization import (
     get_quantization_config,
     get_quantization_info,
     has_quantizable_layers,
+)
+
+# Import validation utilities
+from .validation import (
+    OutputValidator,
+    ValidationResult,
+    validate_audio_output,
+    validate_text_output,
+    validate_tokens,
+)
+
+# Import quality metrics utilities
+from .quality_metrics import (
+    QualityMetrics,
+    analyze_repetition,
+    analyze_token_distribution,
+    assess_quality,
+    calculate_diversity_score,
+    calculate_entropy,
+    calculate_perplexity,
+    compare_quality,
+)
+
+# Import VLM diagnostics utilities
+from .vlm_diagnostics import (
+    compare_with_reference,
+    log_attention_mask,
+    log_embedding_comparison,
+    log_logits_distribution,
+    log_vision_features,
+)
+
+# Import chat template utilities
+from .chat_templates import (
+    MessageFormat,
+    MODEL_FORMATS,
+    apply_chat_template,
+    get_image_token_for_model,
+    validate_image_count,
 )
 
 # Image Utilities
@@ -739,6 +780,8 @@ __all__ = [
     "detect_quantization",
     "get_quantized_layers",
     "verify_weights",
+    "check_tokenizer_compatibility",
+    "verify_model_integrity",
     # Cache utilities
     "KVCache",
     "RotatingKVCache",
@@ -751,4 +794,31 @@ __all__ = [
     "create_class_predicate",
     "estimate_quantized_size",
     "get_quantization_info",
+    # Validation utilities
+    "ValidationResult",
+    "OutputValidator",
+    "validate_text_output",
+    "validate_audio_output",
+    "validate_tokens",
+    # Quality metrics utilities
+    "QualityMetrics",
+    "calculate_perplexity",
+    "calculate_entropy",
+    "analyze_repetition",
+    "analyze_token_distribution",
+    "calculate_diversity_score",
+    "assess_quality",
+    "compare_quality",
+    # VLM diagnostics utilities
+    "log_vision_features",
+    "log_embedding_comparison",
+    "log_logits_distribution",
+    "log_attention_mask",
+    "compare_with_reference",
+    # Chat template utilities
+    "apply_chat_template",
+    "get_image_token_for_model",
+    "validate_image_count",
+    "MessageFormat",
+    "MODEL_FORMATS",
 ]

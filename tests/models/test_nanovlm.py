@@ -112,7 +112,7 @@ class TestModelComponents:
         )
         projection = MLPProjection(config)
 
-        assert hasattr(projection, "mlp")
+        assert hasattr(projection, "proj")
 
     def test_mlp_projection_forward(self):
         """Test MLPProjection forward pass."""
@@ -130,7 +130,8 @@ class TestModelComponents:
 
         output = projection(vision_features)
 
-        assert output.shape == (batch_size, num_patches, 576)
+        # Pixel shuffle (2x2) reduces spatial dimensions: 196 -> 49 (14x14 -> 7x7)
+        assert output.shape == (batch_size, num_patches // 4, 576)
         assert output.dtype == vision_features.dtype
 
     def test_create_projection_factory(self):

@@ -213,6 +213,10 @@ class Orpheus150M(nn.Module):
         super().__init__()
         self.config = config
 
+        # Set True by the loader once real pre-trained weights are applied.
+        # While False, the forward pass runs on random-init weights (noise).
+        self.weights_loaded = False
+
         print("Note: Orpheus-150M TTS Model initialized")
         print("Vocoder: HiFi-GAN V3 (lightweight, 0.92M params)")
         print("For best quality, load pre-trained weights:")

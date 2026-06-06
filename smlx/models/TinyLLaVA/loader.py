@@ -163,6 +163,16 @@ def load(
     print("Loading tokenizer...")
     tokenizer = LlamaTokenizerFast.from_pretrained(str(model_path))
 
+    # Add <image> special token if not already present
+    # LLaVA uses IMAGE_TOKEN_INDEX = vocab_size (32000 for TinyLlama)
+    if "<image>" not in tokenizer.get_vocab():
+        tokenizer.add_tokens(["<image>"], special_tokens=True)
+        config.image_token_index = tokenizer.convert_tokens_to_ids("<image>")
+        print(f"Added <image> token with ID: {config.image_token_index}")
+    else:
+        config.image_token_index = tokenizer.convert_tokens_to_ids("<image>")
+        print(f"Using existing <image> token with ID: {config.image_token_index}")
+
     # Initialize model
     print(f"Initializing TinyLLaVA-{variant.upper()} model...")
     model = TinyLLaVA(config)

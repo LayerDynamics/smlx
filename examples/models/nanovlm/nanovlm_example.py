@@ -21,12 +21,25 @@ Key utilities available:
 - with_graceful_degradation: Auto-adjust parameters
 - auto_select_params: Model-specific safe parameters
 - smart_cleanup: Manual memory cleanup
+
+Usage:
+    # Interactive mode (default) - pauses between examples
+    python nanovlm_example.py
+
+    # Non-interactive mode - runs all examples without pausing
+    python nanovlm_example.py --non-interactive
 """
 
+import argparse
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+# Auto-detect if running in non-interactive environment
+def is_interactive():
+    """Check if running in an interactive terminal."""
+    return sys.stdin.isatty()
 
 # Add smlx to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -251,14 +264,26 @@ def example_6_performance_test():
     print("\n✓ Performance benchmark complete!")
 
 
-def main():
-    """Run all examples."""
+def main(non_interactive=None):
+    """Run all examples.
+
+    Args:
+        non_interactive: If True, run without pausing between examples (for automated testing).
+                        If None, auto-detect based on whether stdin is a tty.
+    """
+    # Auto-detect non-interactive mode if not explicitly set
+    if non_interactive is None:
+        non_interactive = not is_interactive()
+
     print("=" * 80)
     print("nanoVLM - Minimal Vision-Language Model Examples")
     print("=" * 80)
     print("\nNote: nanoVLM is a 222M parameter model optimized for learning")
     print("and experimentation. For production use, consider larger models.")
     print("\nFirst-time run will download the model from HuggingFace Hub.")
+
+    if non_interactive:
+        print("\nRunning in non-interactive mode...")
 
     examples = [
         ("Basic Image Captioning", example_1_basic_caption),
@@ -272,7 +297,9 @@ def main():
     for name, example_func in examples:
         try:
             example_func()
-            input("\nPress Enter to continue to next example...")
+            # Only pause for input if in interactive mode
+            if not non_interactive:
+                input("\nPress Enter to continue to next example...")
         except KeyboardInterrupt:
             print("\n\nExamples interrupted by user.")
             break
@@ -281,9 +308,16 @@ def main():
             import traceback
 
             traceback.print_exc()
-            cont = input("Continue to next example? (y/n): ").strip().lower()
-            if cont != "y":
-                break
+
+            # Only prompt to continue if in interactive mode
+            if not non_interactive:
+                cont = input("Continue to next example? (y/n): ").strip().lower()
+                if cont != "y":
+                    break
+            else:
+                # In non-interactive mode, continue to next example automatically
+                print("Continuing to next example...")
+                continue
 
     # Summary
     print("\n" + "=" * 80)
@@ -314,4 +348,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="nanoVLM Examples - Minimal Vision-Language Model Demonstrations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Interactive mode (default) - pauses between examples
+  python nanovlm_example.py
+
+  # Non-interactive mode - runs all examples without pausing (useful for testing)
+  python nanovlm_example.py --non-interactive
+        """
+    )
+    parser.add_argument(
+        '--non-interactive',
+        action='store_true',
+        help='Run without pausing between examples (for automated testing/CI)'
+    )
+
+    args = parser.parse_args()
+    main(non_interactive=args.non_interactive)

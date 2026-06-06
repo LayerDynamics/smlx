@@ -93,7 +93,10 @@ class NanoVLMConfig:
     projection_config: ProjectionConfig = None
 
     # Architecture
-    num_image_tokens: int = 196  # 14x14 patches for 224x224 image
+    num_image_tokens: int = 49  # 7x7 patches after pixel shuffle (14x14 → 7x7 with factor=2)
+
+    # Tokenizer
+    lm_tokenizer: Optional[str] = None  # HuggingFace tokenizer ID
 
     # Generation defaults
     max_length: int = 2048
@@ -118,12 +121,17 @@ class NanoVLMConfig:
             )
 
         # Validate image tokens
-        num_patches = (
+        # Vision encoder produces 14×14 = 196 patches
+        # Pixel shuffle with factor=2 reduces to 7×7 = 49 patches
+        num_vision_patches = (
             self.vision_config.image_size // self.vision_config.patch_size
         ) ** 2
-        assert self.num_image_tokens == num_patches, (
+        pixel_shuffle_factor = 2  # nanoVLM uses factor=2
+        num_tokens_after_shuffle = num_vision_patches // (pixel_shuffle_factor ** 2)
+
+        assert self.num_image_tokens == num_tokens_after_shuffle, (
             f"num_image_tokens ({self.num_image_tokens}) must match "
-            f"number of patches ({num_patches})"
+            f"number of patches after pixel shuffle ({num_tokens_after_shuffle})"
         )
 
 
@@ -143,13 +151,15 @@ DEFAULT_CONFIG = NanoVLMConfig(
         num_hidden_layers=30,
         num_attention_heads=9,
         num_key_value_heads=3,
+        # Disable NoPE - use RoPE on all layers
+        no_rope_layers=[1] * 30,
     ),
     projection_config=ProjectionConfig(
         vision_hidden_size=768,
         language_hidden_size=576,
         num_layers=2,
     ),
-    num_image_tokens=196,
+    num_image_tokens=49,  # 7x7 patches after pixel shuffle
 )
 
 
@@ -173,24 +183,66 @@ def load_config(model_path: str) -> NanoVLMConfig:
     with open(config_path) as f:
         config_dict = json.load(f)
 
-    # Parse vision config
-    vision_dict = config_dict.get("vision_config", {})
-    vision_config = VisionConfig(**vision_dict)
+    # Parse vision config - handle both nested dict and HF format with vit_ prefix
+    if "vision_config" in config_dict:
+        vision_dict = config_dict["vision_config"]
+        vision_config = VisionConfig(**vision_dict)
+    else:
+        # HF format: vit_hidden_dim, vit_patch_size, etc.
+        vision_config = VisionConfig(
+            hidden_size=config_dict.get("vit_hidden_dim", 768),
+            intermediate_size=config_dict.get("vit_inter_dim", 3072),
+            num_hidden_layers=config_dict.get("vit_n_blocks", 12),
+            num_attention_heads=config_dict.get("vit_n_heads", 12),
+            image_size=config_dict.get("vit_img_size", 224),
+            patch_size=config_dict.get("vit_patch_size", 16),
+            layer_norm_eps=config_dict.get("vit_ln_eps", 1e-6),
+            attention_dropout=config_dict.get("vit_dropout", 0.0),
+        )
 
-    # Parse language config
-    language_dict = config_dict.get("language_config", {})
-    language_config = LanguageConfig(**language_dict)
+    # Parse language config - handle both nested dict and HF format with lm_ prefix
+    if "language_config" in config_dict:
+        language_dict = config_dict["language_config"]
+        language_config = LanguageConfig(**language_dict)
+    else:
+        # HF format: lm_hidden_dim, lm_n_heads, etc.
+        num_layers = config_dict.get("lm_n_blocks", 30)
+        language_config = LanguageConfig(
+            hidden_size=config_dict.get("lm_hidden_dim", 576),
+            intermediate_size=config_dict.get("lm_inter_dim", 1536),
+            num_hidden_layers=num_layers,
+            num_attention_heads=config_dict.get("lm_n_heads", 9),
+            num_key_value_heads=config_dict.get("lm_n_kv_heads", 3),
+            max_position_embeddings=config_dict.get("lm_max_position_embeddings", 8192),
+            rms_norm_eps=config_dict.get("lm_rms_eps", 1e-5),
+            rope_theta=config_dict.get("lm_re_base", 100000),
+            vocab_size=config_dict.get("lm_vocab_size", 49152),
+            tie_word_embeddings=config_dict.get("lm_tie_weights", True),
+            eos_token_id=config_dict.get("lm_eos_token_id", 0),
+            # CRITICAL: Disable NoPE auto-generation
+            # HuggingFace nanoVLM checkpoint was NOT trained with NoPE
+            # Use RoPE on all layers to match reference implementation
+            no_rope_layers=[1] * num_layers,
+        )
 
     # Parse projection config
     projection_dict = config_dict.get("projection_config", {})
     projection_config = ProjectionConfig(**projection_dict)
+
+    # Calculate num_image_tokens accounting for pixel shuffle
+    # Vision encoder produces (image_size / patch_size)² patches
+    # Pixel shuffle reduces by factor²
+    pixel_shuffle_factor = config_dict.get("mp_pixel_shuffle_factor", 2)
+    num_vision_patches = (vision_config.image_size // vision_config.patch_size) ** 2
+    num_image_tokens = num_vision_patches // (pixel_shuffle_factor ** 2)
 
     # Create main config
     config = NanoVLMConfig(
         vision_config=vision_config,
         language_config=language_config,
         projection_config=projection_config,
-        num_image_tokens=config_dict.get("num_image_tokens", 196),
+        num_image_tokens=num_image_tokens,  # 49 for 224x224 with 16x16 patches and pixel_shuffle=2
+        lm_tokenizer=config_dict.get("lm_tokenizer"),  # Load tokenizer path
         max_length=config_dict.get("max_length", 2048),
         temperature=config_dict.get("temperature", 1.0),
         top_p=config_dict.get("top_p", 0.95),

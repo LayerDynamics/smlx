@@ -273,7 +273,7 @@ class LunarLanderEnv(MLXEnv):
             print(
                 f"Pos: ({float(x):.2f}, {float(y):.2f}), "
                 f"Vel: ({float(vx):.2f}, {float(vy):.2f}), "
-                f"Angle: {float(angle) * 180 / np.pi:.1f}°, "
+                f"Angle: {float(angle) * 180 / np.pi:.1f}Â°, "
                 f"Legs: {int(leg_l)}/{int(leg_r)}"
             )
 

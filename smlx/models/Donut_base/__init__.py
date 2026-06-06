@@ -114,20 +114,19 @@ Why Donut?:
     - ✅ Handles diverse document layouts
     - ✅ Structured output (JSON)
     - ✅ Multi-task capable
-    - ✅ Pre-trained on large document datasets
+    - ✅ Compatible with pre-trained Donut checkpoints (load from HuggingFace)
     - ✅ Fast inference on Apple Silicon
 
 IMPORTANT NOTE:
-    This is a reference implementation showing the API structure and
-    integration patterns. For production use:
+    This implements the full Donut architecture — the Swin Transformer encoder
+    and the BART decoder with cross-attention are both implemented. To get
+    meaningful results:
 
-    1. Load pre-trained weights from HuggingFace Hub
-    2. Implement full Swin Transformer encoder
-    3. Implement full BART decoder with cross-attention
-    4. See resources/mlx-examples for reference implementations
+    1. Load pre-trained weights from HuggingFace Hub via the loader module
+    2. See resources/mlx-examples for reference checkpoints
 
-    The current implementation uses placeholder architectures and
-    will not produce meaningful results without pre-trained weights.
+    Without pre-trained weights the model runs on random initialization and
+    will not produce meaningful output.
 """
 
 # Configuration

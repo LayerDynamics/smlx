@@ -306,3 +306,4 @@ __pycache__
 resources
 dist
 node_modules
+debug/

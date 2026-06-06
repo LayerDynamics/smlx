@@ -1,4 +1,4 @@
-# Copyright © 2025 SMLX Project
+# Copyright Â© 2025 SMLX Project
 
 """
 RoPE (Rotary Position Embeddings) aware cache management.

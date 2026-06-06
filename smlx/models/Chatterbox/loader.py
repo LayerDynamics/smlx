@@ -85,7 +85,14 @@ def load(
             print("⚠ Warning: Vocoder initialized with random weights")
             print("   For high-quality audio, load pre-trained HiFi-GAN weights")
     else:
+        weights_loaded = False
+        vocoder_loaded = False
         print("⚠ Warning: No model path found, using random initialization")
+
+    # Real (intelligible) audio requires BOTH the TTS model and the vocoder to
+    # have pre-trained weights. Record this so synthesize() reports honestly
+    # instead of always labelling output "placeholder".
+    model.weights_loaded = bool(weights_loaded and vocoder_loaded)
 
     model.eval()
 
@@ -412,6 +419,28 @@ def download_pretrained_vocoder(
         return None
 
 
+def _flat_to_nested_dict(flat_dict):
+    """
+    Convert flat parameter dict with dot notation to nested dict.
+
+    Args:
+        flat_dict: Dictionary with keys like "llama_backbone.embedding.weight"
+
+    Returns:
+        Nested dictionary matching module hierarchy
+    """
+    nested = {}
+    for key, value in flat_dict.items():
+        parts = key.split('.')
+        current = nested
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        current[parts[-1]] = value
+    return nested
+
+
 def load_tts_model_weights(
     model: "Chatterbox",
     checkpoint_path: Path,
@@ -457,7 +486,11 @@ def load_tts_model_weights(
             # MLX format - load directly
             print("Loading MLX format weights...")
             weights = mx.load(str(checkpoint_path))
-            model.update(weights)
+
+            # Convert flat dict to nested dict for model.update()
+            nested_weights = _flat_to_nested_dict(weights)
+
+            model.update(nested_weights)
             print(f"✓ Loaded {len(weights)} weight tensors (MLX format)")
             return True
 
@@ -477,7 +510,10 @@ def load_tts_model_weights(
 
             # Update model
             if strict:
-                model.update(mlx_weights)
+                # Convert to nested dict
+                nested_weights = _flat_to_nested_dict(mlx_weights)
+                model.update(nested_weights)
+                print(f"✓ Loaded {len(mlx_weights)} weight tensors")
             else:
                 # Non-strict mode: only load matching keys
                 model_params = set(model.parameters().keys())
@@ -490,7 +526,9 @@ def load_tts_model_weights(
 
                 if matching_keys:
                     matched_weights = {k: mlx_weights[k] for k in matching_keys}
-                    model.update(matched_weights)
+                    # Convert to nested dict
+                    nested_matched = _flat_to_nested_dict(matched_weights)
+                    model.update(nested_matched)
                     print(f"✓ Loaded {len(matching_keys)} matching weight tensors")
 
                 if missing_keys:

@@ -124,8 +124,11 @@ class TestVisionComponents:
         """Test VisionProjector module creation."""
         projector = VisionProjector(vision_hidden_size=1152, text_hidden_size=2048)
 
-        assert hasattr(projector, "linear")
-        assert isinstance(projector.linear, nn.Linear)
+        assert hasattr(projector, "fc1")
+        assert hasattr(projector, "fc2")
+        assert hasattr(projector, "activation")
+        assert isinstance(projector.fc1, nn.Linear)
+        assert isinstance(projector.fc2, nn.Linear)
 
     def test_vision_projector_forward(self):
         """Test VisionProjector forward pass."""
@@ -133,7 +136,8 @@ class TestVisionComponents:
 
         batch_size = 2
         num_patches = 50
-        vision_features = mx.random.normal((batch_size, num_patches, 1152))
+        # VisionProjector expects concatenated global + local features (2 * 1152 = 2304)
+        vision_features = mx.random.normal((batch_size, num_patches, 2304))
 
         output = projector(vision_features)
 
@@ -145,7 +149,7 @@ class TestVisionComponents:
         config = VisionConfig()
         encoder = VisionEncoder(config)
 
-        assert hasattr(encoder, "patch_embed")
+        assert hasattr(encoder, "embeddings")
         assert encoder.config.image_size == 378
         assert encoder.config.patch_size == 14
 

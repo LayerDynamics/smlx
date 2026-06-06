@@ -191,23 +191,65 @@ def load(
 
     # Load weights into model
     print("Loading weights into model...")
-    model.load_weights(list(weights.items()))
+    # Build nested dict structure matching model hierarchy
+    # Lists (like layers) need special handling
+    def build_nested_dict(flat_weights):
+        nested = {}
+        for key, value in flat_weights.items():
+            parts = key.split('.')
+            current = nested
+
+            for i, part in enumerate(parts[:-1]):
+                # Check if this part looks like a list index
+                try:
+                    idx = int(part)
+                    # Ensure parent is a list
+                    if not isinstance(current, list):
+                        # This shouldn't happen with correct traversal
+                        current = []
+                    # Extend list if needed
+                    while len(current) <= idx:
+                        current.append({})
+                    current = current[idx]
+                except ValueError:
+                    # String key - use as dict
+                    if part not in current:
+                        # Peek ahead to see if next part is numeric
+                        if i + 1 < len(parts) - 1:
+                            try:
+                                int(parts[i + 1])
+                                current[part] = []
+                            except ValueError:
+                                current[part] = {}
+                        else:
+                            current[part] = {}
+                    current = current[part]
+
+            # Set final value
+            current[parts[-1]] = value
+
+        return nested
+
+    nested_weights = build_nested_dict(weights)
+    model.update(nested_weights)
 
     if not lazy:
         mx.eval(model.parameters())
 
     model.eval()
 
-    # Load tokenizer
-    print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-
-    # Create image processor
-    print("Creating image processor...")
-    image_processor = ImageProcessor()
-
-    # Create combined processor
-    processor = Processor(tokenizer=tokenizer, image_processor=image_processor)
+    # Load HuggingFace processor (handles image token expansion correctly)
+    print("Loading processor...")
+    try:
+        from transformers import AutoProcessor as HFAutoProcessor
+        processor = HFAutoProcessor.from_pretrained(str(model_path))
+        print("✓ Using HuggingFace AutoProcessor (proper image token expansion)")
+    except Exception as e:
+        print(f"Warning: Could not load HF AutoProcessor ({e}), falling back to custom processor")
+        # Fallback to custom processor
+        tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        image_processor = ImageProcessor()
+        processor = Processor(tokenizer=tokenizer, image_processor=image_processor)
 
     print("✓ Model loaded successfully!")
     return model, processor

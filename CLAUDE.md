@@ -2,393 +2,151 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## ⚠️ Important Notes - READ FIRST
-
-**Critical Rules:**
-
-1. **NEVER import from `resources/`** - The resources directory contains reference implementations ONLY. Study patterns, then copy and adapt code into `smlx/` modules.
-
-2. **Always activate conda environment** - Before running any commands:
-
-   ```bash
-   conda activate smlx
-   ```
-
-3. **Python path for all commands**: `/Users/ryanoboyle/miniforge3/envs/smlx/bin/python`
-
-4. **"Smol" models only** - All models must be < 1B parameters (< 500M preferred)
-
-5. **Don't remove stub files** - If something is called but missing, it should be implemented, not removed (per global instructions)
-
-6. **Code style**: Line length = 100 characters (configured in pyproject.toml for both black and ruff)
-
 ## Project Overview
 
-SMLX (smol MLX) is a Python package focused on implementing small models (vision, voice, and multimodal) using Apple's MLX framework, specifically optimized for M4 chipsets with unified memory (36GB).
+SMLX (Smol MLX) is a Python package for small models (< 1B parameters) using Apple's MLX framework, optimized for M4 chipsets. Focus areas: vision, voice, language, and multimodal models.
 
-**Core Requirement**: All models in this project must be "smol" (small/lightweight).
+**Critical Requirement**: All models must be "smol" (< 1B parameters, preferably < 500M).
 
-## Architecture
+## Known Defects — Deceptive or Wrong Code (RESOLVED)
 
-### Module Structure
+The items below were found by auditing the actual source (file:line cited) for code,
+output, or claims that misrepresented what actually happens, plus things that were
+broken/no-op. **All have now been fixed** (checked boxes); regression tests live in
+`tests/regression/test_known_defects.py`. A few items have residual *by-design* caveats,
+noted inline (e.g. GGML formats give no MLX runtime savings; datasets are LFS-tracked and
+absent until pulled). Kept here as an audit trail — if you touch these areas, preserve the
+fix and its test.
 
-The project is organized into the following modules:
+### CRITICAL — broken / non-functional
 
-- **`smlx/agents/`** - Agent implementations with:
-  - `base.py` - Base agent class (Message, AgentResponse, BaseAgent)
-  - `react.py` - ReAct (Reasoning + Acting) agent
-  - `cot.py` - Chain-of-Thought reasoning agent
-  - `memory.py` - Agent memory management
-  - `tools.py` - Tool registry and tool implementations
+- [x] **Invalid-UTF-8 source files crash on (re)compile.** 8 files carry a bare Latin-1
+  byte (`©`=`0xA9`, `°`=`0xB0`, `±`=`0xB1`, or `0xF1`) in a comment with **no**
+  `# -*- coding: utf-8 -*-` header. Python 3 raises
+  `SyntaxError: Non-UTF-8 code starting with '\xNN'` on recompile. Fix the byte (use a
+  real UTF-8 `©` or ASCII `(c)`) in every one:
+  - `smlx/utils/trace.py` — **fails to import now** (14 bad bytes)
+  - `smlx/gym/envs/classic/cartpole.py:21` and `smlx/gym/envs/classic/lunar_lander.py` —
+    **fail to import**, and via `smlx/gym/envs/classic/__init__.py:23-24` they take the
+    whole `smlx.gym.envs.classic` package down (valid `MountainCarEnv` becomes
+    unimportable too)
+  - `smlx/main.py:2` — `python smlx/main.py` dies immediately (CLI only runs via
+    `python -m smlx.main` off cached `.pyc`)
+  - `smlx/kv_cache/rope.py`, `smlx/server/__init__.py`,
+    `smlx/server/middleware/__init__.py`, `smlx/server/routes/__init__.py` — import only
+    via stale `.pyc`; break the moment they are edited/recompiled
 
-- **`smlx/bench/`** - Performance benchmarking with:
-  - `cli.py` - Command-line interface for benchmarks
-  - `runners.py` - Benchmark execution runners
-  - `stats.py` - Statistical analysis
-  - `system.py` - System information gathering
-  - `report.py` - Benchmark report generation
-  - `run.py` - Main benchmark orchestration
-  - `suites/` - Benchmark suites:
-    - `llm.py` - Language model benchmarks (prompt/generation tokens, TTFT)
-    - `vlm.py` - Vision-language model benchmarks
-    - `quantization.py` - Quantization performance tests
-    - `text_generation.py` - Text generation quality/speed
-    - `ops.py` - Low-level MLX operation benchmarks
+- [x] **`smlx/server/routes/gym.py` is an orphaned router.** It defines 5 real endpoints
+  (`POST/GET /v1/gym/envs...`, lines 179-362) but is **never** `include_router`'d in
+  `smlx/server/app.py` (only the 5 OpenAI routers are wired, app.py:215-219). Every
+  `/v1/gym/*` route is unreachable. Either register it or delete it.
 
-- **`smlx/evals/`** - Evaluation benchmarks including:
-  - `math_vista.py` - Math-Vision-Language tasks
-  - `mmmu.py` - Multimodal understanding
-  - `mmstar.py` - Multimodal reasoning
-  - `ocrbench.py` - OCR benchmarks
-  - `utils.py` - Evaluation utilities
+### HIGH — fabricated output presented as real (most deceptive)
 
-- **`smlx/models/`** - Model implementations (see "Available Models" below)
+- [x] **`smlx/models/Orpheus_150M/synthesize.py:70-73`** prints
+  `"✓ Generated …s of audio (HiFi-GAN V3 vocoder)"` even though `loader.py:113-121`
+  admits the weights aren't on HF and returns `None`, so the forward pass runs on
+  **random-init weights and emits noise**. Presents garbage as a successful synthesis.
+  Make output honest/conditional on real weights being loaded.
+- [x] **`smlx/models/Chatterbox/synthesize.py:191-195`** *unconditionally* prints
+  `"Note: Generated …s of placeholder audio … Load pre-trained weights … for actual
+  synthesis"` — wrong in the success case (`loader.py:76-86` can load real weights) and
+  the inverse deception of Orpheus. Gate the message on whether weights actually loaded.
+- [x] **`smlx/tools/convert2mlx.py:350-385` `quantize_model` is a no-op.** It writes a
+  `quantization` block into the config then `return weights, quantized_config` with the
+  tensors **unchanged** (`# For now, return weights as-is`). It's reachable via the
+  `--quantize` CLI flag (line ~1085, help: "Apply quantization to model"), so users get
+  an unquantized model **labeled as quantized**. The `--quant-recipe` mixed-bit path
+  (lines 945-955) also logs a warning and falls through to this no-op. Wire it to the
+  real `smlx.quant` module or remove the flags.
+- [x] **`smlx/bench/suites/quantization.py:228-229`** fabricates the prefill/decode split:
+  `prompt_time = total_time * 0.2` / `generation_time = total_time * 0.8` (hardcoded
+  ratio), then reports `prompt_tps`/`generation_tps` as if measured. Measure the two
+  phases or stop reporting them as distinct metrics.
+- [x] **`smlx/bench/suites/llm.py:550-553` `benchmark_llm_streaming` is fake.** It
+  `return stats, []` (empty token-times) while its docstring/example (lines 541-548)
+  promise per-token timing and compute TTFT as `token_times[0]` → callers get an
+  `IndexError`. Implement real streaming timing or delete the function + its claims.
 
-- **`smlx/quant/`** - Quantization techniques:
-  - `awq.py` - Activation-aware Weight Quantization
-  - `gptq.py` - GPT Quantization
-  - `dwq.py` - Dynamic Weight Quantization
-  - `dynamic_quant.py` - Dynamic quantization
-  - `lora.py` - Low-Rank Adaptation
-  - `dora.py` - Weight-Decomposed Low-Rank Adaptation
+### MEDIUM — misleading behavior / false capability claims
 
-- **`smlx/server/`** - FastAPI-based REST API server with:
-  - `app.py` - Main FastAPI application with lifespan management
-  - `model_manager.py` - Model loading and caching
-  - `schemas.py` - Pydantic request/response schemas
-  - `middleware/` - Server middleware:
-    - `error_handling.py` - Global error handling
-    - `logging.py` - Request/response logging
-    - `rate_limit.py` - Rate limiting
-  - `routes/` - API endpoints (OpenAI-compatible):
-    - `chat.py` - Chat completions endpoint
-    - `completions.py` - Text completions endpoint
-    - `audio.py` - Audio transcription endpoint
-    - `embeddings.py` - Text embeddings endpoint
-    - `models.py` - Model listing endpoint
+- [x] **`smlx/quant/autoquant.py:143-149`** — the "Test if MXFP quantization is available"
+  probe calls plain **INT4** `mx.quantize` (no `mode="mxfp4"`), which always succeeds, so
+  it **unconditionally sets `ocp_microscaling=True`**, overriding the correct
+  M1/M2 → `False` detection at lines 98-102. Falsely advertises MXFP hardware support on
+  M1/M2 and routes to unsupported strategies. Probe the real `mode="mxfp4"` path.
+- [x] **`smlx/quant/dwq.py:383-413`** — the loop printed as "Step 4: Refining weights with
+  knowledge distillation" computes `_total_loss` and **discards it**
+  (`# unused for now`); no gradients, no optimizer — it recomputes the same output and
+  prints the same loss every iteration. Real refinement happens only in Step 4.5
+  (`_refine_with_gradients`, 415-426). Remove the dead display loop or make it train.
+  (Related: `dwq.py:242-243` comment claims "Update only scales and biases (filter
+  gradients)" but no filtering occurs.)
+- [x] **`smlx/gym/algorithms/base.py:296-299` `_evaluate()` is `pass` + `# TODO`** yet it's
+  called every `eval_interval` episodes in the live training loop (line 240). Configured
+  evaluations silently do nothing. Implement it.
+- [x] **`smlx/models/Donut_base`** — `model.py:782,870` docstrings call the
+  **implemented** `BARTDecoder` a "placeholder … replaced in Phase 2", and
+  `__init__.py:117` claims "✅ Pre-trained on large document datasets" while
+  `__init__.py:124-130` admits no weights load. Fix the contradictory docstrings/claims.
+- [x] **`smlx/models/SmolVLM_500M_Instruct/model.py:5,12`** — module docstring says
+  "SmolVLM-**256M**-Instruct" and "Total parameters: **~256M**" (copy-pasted from the
+  256M variant; this is the 500M model). Correct the figures.
+- [x] **`smlx/models/Moondream2/generate.py:543-544`** emits a hardcoded `0.9` confidence
+  for every text-parsed detection (fabricated scores). It's a documented fallback, but
+  returns fake numbers — surface them as `None`/unknown instead.
 
-- **`smlx/tools/`** - Utility tools including:
-  - `convert2mlx.py` - Convert models to MLX format
-  - `download.py` - Core download utilities
-  - `download_data.py` - CLI for downloading models and datasets
-  - `compare_results.py` - Compare benchmark results
+### LOW — disclosed-but-misleading, naming mismatches, doc drift
 
-- **`smlx/utils/`** - General utilities (see below for details)
+- [x] **GGML `quantize_model_*` helpers dequantize back to FP16 → zero runtime savings**
+  despite the name (`smlx/quant/q8_0.py:195`, `q4_1.py:227`,
+  `q4_k_m.py:355,544,564`, `q6_k.py:374`). Disclosed in docstrings; rename or actually
+  keep weights packed.
+- [x] **`smlx/models/TrOCR_small/processor.py:181-238`** — `ord(c) % vocab_size` /
+  `chr(t)` char-level tokenizer fallback silently produces garbage if the HF tokenizer
+  load (line ~155) fails. Fail loudly instead.
+- [x] **`smlx/models/SileroVAD/loader.py:123-128`** — ONNX (Silero's *native* format) →
+  "Conversion to MLX not yet implemented" → random weights. The realistic path yields an
+  untrained VAD.
+- [x] **`smlx/bench/suites/quantization.py:128`** hardcodes `total_params = 135_000_000`
+  fallback; **`smlx/bench/suites/llm.py:386-390`** `_manual_generate_loop` never breaks on
+  EOS (token counts ignore natural stopping).
+- [x] **CLI not installed as a console script** — `pyproject.toml [project.scripts]` has
+  `smlx = "smlx.main:main"` commented out, so the documented `smlx …` command doesn't
+  exist; only `python -m smlx.main` works. Wire it up or document only the module form.
 
-- **`smlx/gym/`** - Gymnasium/RL environment integrations (planned - see docs/GymResearch/Gym_Claude.md for design)
+### Documentation defects in THIS file (now reconciled)
 
-### Data Directory Structure
+- [x] **"Version Control" section** — the working tree was **not** a git repository. Fixed
+  by `git init` (branch `main`); `git status` now works. No commits were made — the tree
+  is untracked until you choose to commit.
+- [x] **"Data Directory (Git LFS)" section** — there was no top-level `data/`. Fixed by
+  creating the `data/{audio,benchmark,datasets,documents,images}/` skeleton (each with a
+  `.gitkeep`). **Residual by-design:** the actual datasets are Git-LFS tracked and remain
+  absent until `git lfs pull` against a remote that has them.
+- [x] **"Model Implementation Pattern" overstated uniformity** — clarified in that section
+  that the 6-file layout is the SmolLM2-style template, and audio models like
+  `Whisper_tiny` use a different layout.
+- [x] **`smlx/models/all_MiniLM_L6_v2/`** has no `model.py` (it's a thin wrapper around
+  `MiniLM`) — the "Implemented Models → Embeddings" entry is corrected to say so.
 
-The `data/` directory is tracked with Git LFS and contains datasets, models, and test files:
+## Essential Commands
 
-- **`data/audio/`** - Audio files for testing (speech, TTS, environmental sounds)
-- **`data/benchmark/`** - Benchmark datasets and reference results
-- **`data/datasets/`** - Evaluation datasets (MathVista, MMMU, OCRBench, etc.)
-- **`data/documents/`** - Document images for OCR testing
-- **`data/images/`** - Test images for vision models
+### Python Environment
 
-**Important**: These files are stored with Git LFS. Use `git lfs pull` after cloning to download them.
-
-### Server Architecture (FastAPI)
-
-The server follows a standard FastAPI pattern:
-
-1. **Application Lifecycle** (`app.py`):
-   - `lifespan()` context manager handles startup/shutdown
-   - Global `ModelManager` instance for model caching
-   - CORS middleware for cross-origin requests
-
-2. **Model Management** (`model_manager.py`):
-   - Lazy model loading (models loaded on first request)
-   - Model caching to avoid reloading
-   - Automatic model discovery from `smlx.models/`
-
-3. **Request Flow**:
-
-   ```text
-   Client Request → Middleware (logging, rate limit, error handling)
-                 → Route Handler → Model Manager → Model Inference
-                 → Response (JSON or Streaming)
-   ```
-
-4. **API Endpoints** (OpenAI-compatible):
-   - `POST /v1/chat/completions` - Chat with message history
-   - `POST /v1/completions` - Simple text completion
-   - `POST /v1/audio/transcriptions` - Audio transcription (Whisper)
-   - `POST /v1/embeddings` - Text embeddings
-   - `GET /v1/models` - List available models
-
-5. **Running the Server**:
-
-   ```bash
-   python -m smlx.server.app --host 0.0.0.0 --port 8000
-   # Or with uvicorn:
-   uvicorn smlx.server.app:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-### Agent System Architecture
-
-The agent system provides autonomous task execution with tool use:
-
-1. **Base Components** (`base.py`):
-   - `Message` - Conversation messages (role, content, timestamp, metadata)
-   - `AgentResponse` - Agent execution results (content, reasoning, tool_calls, success)
-   - `BaseAgent` - Abstract base class for all agents
-
-2. **Agent Types**:
-   - **ReAct Agent** (`react.py`) - Reasoning + Acting pattern
-     - Iteratively reasons about next action
-     - Executes tools
-     - Updates based on observations
-   - **Chain-of-Thought** (`cot.py`) - Step-by-step reasoning
-     - Zero-shot or few-shot prompting
-     - Structured thinking process
-   - **Self-Consistency CoT** - Multiple reasoning paths, voting
-
-3. **Tool System** (`tools.py`):
-   - `ToolRegistry` - Central tool registration and discovery
-   - Built-in tools: calculator, get_time, wikipedia_search, etc.
-   - Custom tool creation via decorators
-
-4. **Memory Management** (`memory.py`):
-   - Conversation history tracking
-   - Context window management
-   - Memory summarization for long interactions
-
-### Benchmark Suite Structure
-
-The benchmark system supports multiple specialized suites:
-
-1. **LLM Benchmarks** (`suites/llm.py`):
-   - Configurable prompt/generation tokens
-   - Time to first token (TTFT) measurement
-   - Tokens/second throughput
-   - Batch processing benchmarks
-   - Memory usage tracking
-
-2. **VLM Benchmarks** (`suites/vlm.py`):
-   - Vision-language model performance
-   - Image processing overhead
-   - Multimodal generation speed
-
-3. **Quantization Benchmarks** (`suites/quantization.py`):
-   - Compare FP16 vs 4-bit vs 8-bit performance
-   - Memory reduction measurements
-   - Quality degradation analysis
-
-4. **Text Generation Benchmarks** (`suites/text_generation.py`):
-   - Generation quality metrics
-   - Different sampling strategies
-   - Temperature/top-p effects
-
-5. **Ops Benchmarks** (`suites/ops.py`):
-   - Low-level MLX operation performance
-   - Matrix operations, attention, layer norms
-   - Metal GPU utilization
-
-**Running Benchmarks**:
+**Python path for all commands**: `/Users/ryanoboyle/miniforge3/envs/smlx/bin/python`
 
 ```bash
-# List available benchmark suites
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run --list
-
-# Display system information
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run system
-
-# Specific suite
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run llm --model SmolLM2-135M
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run quantization --model SmolLM2-135M
-
-# Operation benchmarks
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run ops --operation matmul --shape 1000,1000
-
-# Run all benchmarks
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run --all --model SmolLM2-135M
-```
-
-### Utility Modules
-
-The `smlx/utils/` directory provides reusable utilities across the project:
-
-- `stats.py` - Statistical utilities for analysis
-- `memory.py` - Memory profiling and optimization
-- `timing.py` - Performance timing utilities
-- `config.py` - Configuration management helpers
-- `cache.py` - Caching utilities (shared KV cache implementations)
-- `formatting.py` - Output formatting utilities
-- `io.py` - Input/output helpers
-- `sampling.py` - Token sampling utilities (temperature, top-p, top-k)
-- `generation.py` - Text generation utilities
-- `loading.py` - Model loading helpers
-- `vision.py` - Vision utilities (image loading, preprocessing, batch processing)
-- `batch.py` - Batch processing utilities
-- `profiling.py` - Performance profiling utilities
-- `quantization.py` - Quantization helper utilities
-
-**When implementing new models**: Prefer using these shared utilities over reimplementing common functionality.
-
-### Available Models
-
-The project currently includes the following "smol" models:
-
-**Fully Implemented (✓):**
-
-**Language Models:**
-
-- **SmolLM2_135M** - 135M parameter language model with generation, streaming, and chat
-- **SmolLM2_360M** - 360M parameter variant with improved capabilities
-
-**Vision-Language Models:**
-
-- **SmolVLM_256M** - 256M parameter VLM with SigLIP vision + SmolLM2 language
-- **SmolVLM_500M_Instruct** - 500M parameter VLM variant with larger capacity
-- **nanoVLM** - 222M parameter minimal VLM (SigLIP-base + MLP + SmolLM2-135M)
-- **Moondream2** - ~500M parameter VLM with region detection and spatial reasoning
-- **TinyLLaVA** - Compact LLaVA variant for vision-language tasks
-
-**Audio Models:**
-
-- **Whisper_tiny** - Lightweight speech recognition with comprehensive support
-- **Chatterbox** - 500M parameter TTS model with voice cloning and emotion control (reference implementation)
-- **Orpheus_150M** - 150M parameter lightweight TTS model (reference implementation)
-- **YAMNet** - Audio event classification
-- **SileroVAD** - Voice activity detection
-
-**Document/OCR Models:**
-
-- **TrOCR_small** - Optical character recognition for printed and handwritten text
-- **Donut_base** - OCR-free document understanding with Swin Transformer + BART (reference implementation)
-
-**Embedding Models:**
-
-- **MiniLM** - Efficient text embeddings
-- **all-MiniLM-L6-v2** - Sentence embeddings
-
-**Notes on Reference Implementations:**
-
-Some models (Chatterbox, Orpheus_150M, Donut_base) are complete reference implementations showing proper API structure and architecture patterns. They require pre-trained weights from HuggingFace Hub to produce actual outputs. All have:
-- Complete model architectures
-- Full API implementations
-- Comprehensive example files
-- Integration tests
-
-**Planned/New Models:**
-
-- **smolGenCad** - CAD generation model (early development)
-
-**Fully Implemented Model Structure (SmolLM2_135M as reference):**
-
-- `model.py` - Core model architecture (Attention, MLP, TransformerBlock, NoPE)
-- `loader.py` - Model and tokenizer loading from HuggingFace Hub
-- `generate.py` - Text generation with streaming support and chat interface
-- `cache.py` - KV cache implementations (standard and rotating)
-- `config.py` - Configuration management and validation
-- `__init__.py` - Public API exports
-
-**Fully Implemented Audio Model Structure (Whisper-tiny as reference):**
-
-- `model.py` - Core Whisper architecture
-- `audio.py` - Audio preprocessing and feature extraction
-- `transcribe.py` - Transcription interface
-- `streaming.py` - Real-time streaming support
-- `decoding.py` - Advanced decoding strategies
-- `vad.py` - Voice activity detection
-- `tokenizer.py` - Whisper tokenization
-- `timing.py` - Timestamp alignment
-
-### Resources Directory - CRITICAL RULE
-
-The `resources/` directory contains reference implementations from various MLX projects:
-
-- `mlx/` - Core MLX framework
-- `mlx-examples/` - MLX example implementations
-- `mlx-lm/` - MLX language models
-- `mlx-vlm/` - MLX vision-language models
-- `mflux/` - Flux implementation
-- `chat-with-mlx/` - Chat interface
-- `lightning-whisper-mlx/` - Whisper speech recognition
-- `ml-aim/` - AIM models
-- `transformerlab-app/` - Transformer lab application
-
-**IMPORTANT**: Code in `resources/` is for reference and borrowing patterns ONLY. Do NOT import directly from these modules. Instead:
-
-1. Study the implementation patterns
-2. Adapt and copy relevant code into the appropriate `smlx/` module
-3. Ensure the implementation is suitable for "smol" models
-
-**Comprehensive Pattern Documentation:**
-
-To effectively use the resources directory, consult these comprehensive pattern guides:
-
-- **[RESOURCES_INDEX.md](RESOURCES_INDEX.md)** - Start here: Quick guide to using the three pattern documents
-- **[RESOURCES_QUICK_START.md](RESOURCES_QUICK_START.md)** - Fast implementation checklist (5 min read)
-- **[RESOURCES_REFERENCE_MAP.md](RESOURCES_REFERENCE_MAP.md)** - Exact code patterns with line numbers for copy-paste
-- **[RESOURCES_PATTERNS.md](RESOURCES_PATTERNS.md)** - Deep dive into all architectural patterns (20 min read)
-
-**Model Conversion Guides** (for converting external models to MLX):
-
-- **[CONVERSION_INDEX.md](CONVERSION_INDEX.md)** - Step-by-step conversion workflow
-- **[CONVERSION_PATTERNS.md](CONVERSION_PATTERNS.md)** - Common PyTorch→MLX patterns
-- **[CONVERSION_REFERENCE.md](CONVERSION_REFERENCE.md)** - Detailed operation mapping reference
-
-**When implementing new models**:
-
-1. If converting from PyTorch/TensorFlow: Start with `CONVERSION_INDEX.md`
-2. For MLX-native implementation: Study `RESOURCES_QUICK_START.md` first, then use `RESOURCES_REFERENCE_MAP.md` for exact code to copy
-
-## Development Commands
-
-### Environment Setup
-
-**Requirements**: Python >=3.9, <3.13
-
-```bash
-# Using Conda (recommended for M4 Macs)
-conda env create -f environment.yml
+# Activate conda environment before running any commands
 conda activate smlx
 
-# Using pip
-pip install -e .                      # Install base package in editable mode
-pip install -e ".[dev]"               # Install with development dependencies
-pip install -e ".[all]"               # Install with all optional dependencies
-pip install -e ".[evals,server]"      # Install specific optional groups
+# Install package in editable mode
+pip install -e .                    # Base install
+pip install -e ".[dev]"             # With dev dependencies
+pip install -e ".[all]"             # With all optional dependencies
 ```
 
-Available optional dependency groups: `dev`, `evals`, `server`, `quant`, `agents`, `vision`, `audio`, `mlx-ecosystem`
-
-### Build System
-
-The project uses modern Python packaging with configuration primarily in `pyproject.toml`:
-
-- **pyproject.toml** - All package metadata, dependencies, and tool configurations (black, ruff, mypy)
-- **setup.py** - Minimal wrapper for backwards compatibility and editable installs
-- **MANIFEST.in** - Controls which files are included in distributions (excludes `resources/`)
-
-No separate build step is required - the package is installed directly via `pip install -e .`
-
 ### Testing
-
-**Python Path:** `/Users/ryanoboyle/miniforge3/envs/smlx/bin/python`
 
 ```bash
 # Run all tests
@@ -398,192 +156,341 @@ No separate build step is required - the package is installed directly via `pip 
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest tests/quant/test_gptq.py -v
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest tests/integration/test_smollm2_generation.py -v
 
-# Run tests matching pattern
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -k test_function_name
+# Run with markers
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m unit          # Only unit tests
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m "not slow"    # Skip slow tests
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m integration   # Integration tests
 
-# Run tests with markers
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m unit                        # Run only unit tests
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m "not slow"                  # Skip slow tests
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m "not gpu"                   # Skip tests requiring GPU
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -m integration                 # Run only integration tests
+# Useful options
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -v               # Verbose
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -x               # Stop on first failure
 
-# Run specific test suites
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest tests/quant/ -v               # All quantization tests
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest tests/evals/ -m eval          # Evaluation tests
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest tests/integration/ -v         # Integration tests
-
-# Useful test options
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -v                            # Verbose output
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -x                            # Stop on first failure
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest --durations=10                # Show 10 slowest tests
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -n auto                       # Parallel execution
-
-# Coverage (when enabled in pytest.ini)
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest --cov=smlx --cov-report=html  # Generate coverage report
+# Parallel execution: -n auto is DELIBERATELY NOT enabled in pytest.ini.
+# Integration tests use module-scoped fixtures and will exhaust memory if run in
+# parallel. Only parallelize unit tests, and cap the worker count:
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m pytest -n 2 tests/unit/
 ```
+
+**pytest.ini gotchas that bite (all configured in `addopts`/`[pytest]`):**
+- `filterwarnings = error` — **any warning fails the test**. New code that emits a
+  DeprecationWarning (etc.) will fail until the warning is fixed or explicitly ignored.
+- `--timeout=60` (thread method) — a single test taking >60s is killed. Mark genuinely
+  long tests `@pytest.mark.slow` and/or raise the timeout for them.
+- `--strict-markers --strict-config` — using an unregistered marker is a hard error.
+  Register every new marker in `pytest.ini` before using it.
+- `asyncio_mode = auto` — async tests run without an explicit `@pytest.mark.asyncio`.
 
 ### Code Quality
 
-**Code Style Configuration:**
-
-- **Line length**: 100 characters (configured in pyproject.toml)
-- **Formatter**: Black (line-length = 100)
-- **Linter**: Ruff (line-length = 100)
-- **Type checker**: MyPy
-
 ```bash
-# Format code
-black .                                                                # Format all Python files
-black smlx/                                                            # Format only smlx package
+# Format code (line length = 100)
+black .
 
 # Lint code
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m ruff check .     # Check all files
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m ruff check smlx/ # Check only smlx package
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m ruff check --fix .  # Auto-fix issues
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m ruff check .
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m ruff check --fix .      # Auto-fix
 
 # Type checking
-mypy smlx/                                                             # Run type checker on package
+mypy smlx/
 ```
 
-### Tools & Utilities
+### Running Examples
 
 ```bash
-# Download models and datasets
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.tools.download_data --all
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.tools.download_data --model mlx-community/SmolLM2-135M-Instruct
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.tools.download_data --models --datasets
-
-# Run benchmarks
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run --list     # List available benchmarks
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run system     # Display system info
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.bench.run ops        # Run operation benchmarks
-```
-
-### Examples
-
-**Working Examples** (fully functional):
-
-```bash
-# SmolLM2-135M examples (basic generation, streaming, chat)
+# Language models
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/models/smollm2_135m/smollm2_135m_example.py
 
-# SmolVLM-256M examples (vision-language model)
+# Vision-language models
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/smolvlm_256m/basic_vqa.py
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/smolvlm_256m/batch_processing.py
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/smolvlm_256m/streaming_example.py
-
-# nanoVLM examples (minimal 222M VLM)
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/nanovlm/minimal_vlm.py
-
-# Moondream2 examples (region detection and spatial reasoning)
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/moondream2/object_detection_example.py
 
-# Whisper-tiny examples (audio transcription)
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/whisper_tiny/basic_transcription.py
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/whisper_tiny/batch_transcription.py
+# Audio models
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/models/whisper_tiny/basic_transcription.py
 ```
 
-**Example Capabilities Demonstrated:**
+### Command-Line Interface (`smlx/main.py`)
 
-- Basic text generation with custom parameters
-- Streaming output for real-time applications
-- Chat-style interactions with conversation history
-- Custom generation configurations
-- **Visual question answering (VQA) with images**
-- **Image captioning and description**
-- **Batch image processing**
-- **Streaming multimodal generation**
-- **Object detection and spatial reasoning**
-- Audio transcription (basic and batch processing)
+There is a full Click-based CLI in `smlx/main.py` (commands: `generate`, `server`,
+`bench`, `convert`, `download`, `transcribe`). It is **not** wired up as a console
+script yet — the `smlx = "smlx.main:main"` entry in `pyproject.toml` is commented out —
+so invoke it as a module:
 
-**Example Directory Structure:**
+```bash
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main generate SmolLM2-135M "Hello"
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main generate SmolVLM-256M "What's this?" -i photo.jpg
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main server --host 0.0.0.0 --port 8000
+/Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main transcribe audio.wav
+```
 
-- `examples/models/` - Model-specific examples organized by model type:
-  - `smollm2_135m/` - SmolLM2-135M demonstrations (✓ working)
-  - `smollm2_360m/` - SmolLM2-360M demonstrations
-  - `smolvlm_256m/` - SmolVLM-256M demonstrations
-  - `smolvlm_500m/` - SmolVLM-500M demonstrations
-  - `moondream2/` - Moondream2 demonstrations
-  - `nanovlm/` - nanoVLM demonstrations
-  - `tinyllava/` - TinyLLaVA demonstrations
-  - `whisper_tiny/` - Whisper audio transcription examples (✓ working)
-  - `trocr_small/` - TrOCR OCR examples (✓ working)
-  - `yamnet/` - YAMNet audio classification examples
-  - `silero_vad/` - Silero VAD examples
-  - `chatterbox/` - Chatterbox speech synthesis examples
-  - `donut_base/` - Donut document understanding examples
-  - `minilm/` - MiniLM embedding examples
-  - `all_minilm_l6_v2/` - all-MiniLM-L6-v2 examples
-  - `orpheus_150m/` - Orpheus audio processing examples
-- `examples/vlm/` - Cross-model vision-language examples (✓ working)
-  - `smolvlm_256m/` - Advanced VQA, batch processing, streaming
-  - `nanovlm/` - Minimal VLM demonstrations
-  - `moondream2/` - Object detection and spatial reasoning
-- `examples/agents/` - Agent system examples
-- `examples/quant/` - Quantization examples
-- `examples/eval/` - Evaluation examples
-- `examples/server/` - Server API examples
-- `examples/performance/` - Performance benchmark examples
+> **Run it as a module (`-m smlx.main`), not as a script (`python smlx/main.py`).**
+> Several source files (`smlx/main.py`, `smlx/utils/trace.py`, `smlx/kv_cache/rope.py`,
+> `smlx/gym/envs/classic/{cartpole,lunar_lander}.py`, and the `smlx/server/`
+> `__init__.py` files) contain a bare Latin-1 `©` byte (`0xA9`) in a comment with no
+> `# -*- coding: utf-8 -*-` declaration. Python 3 raises
+> `SyntaxError: Non-UTF-8 code starting with '\xa9'` whenever it **recompiles** such a
+> file. Today these import only because a valid cached `.pyc` exists; `trace.py`,
+> `cartpole.py`, and `lunar_lander.py` already fail to import outright, and
+> `python smlx/main.py` fails immediately. When you edit any of these files, fix the
+> byte (use a real UTF-8 `©` or ASCII `(c)`) in the same change, or the module stops
+> importing.
 
-### Python Environment
+## Architecture Overview
 
-This project uses Python >=3.9, <3.13 with the following configuration files:
+### Module Structure
 
-- `pyproject.toml` - Project metadata, dependencies, and tool configurations (black, ruff, mypy)
-- `setup.py` - Package setup configuration (enables editable installs)
-- `environment.yml` - Conda environment specification
-- `pytest.ini` - Pytest configuration with custom markers
-- `MANIFEST.in` - Package manifest (excludes resources/ from distribution)
+```
+smlx/
+├── models/          # Model implementations (SmolLM2, SmolVLM, Whisper, etc.)
+│   ├── common/      # Shared model components (attention, MLP, embeddings)
+│   ├── registry.py  # Universal model loading and discovery
+│   ├── smlx_router.py   # Model routing and capability detection
+│   ├── smlx_runner.py   # Inference execution framework
+│   └── smlx_manager.py  # Model lifecycle and caching
+├── quant/           # Quantization (GPTQ, AWQ, LoRA, DoRA, 4-bit, 8-bit, etc.)
+├── utils/           # Shared utilities (generation, sampling, loading, memory)
+├── config/          # Per-model memory profiles & safe-parameter presets (OOM guards)
+├── evals/           # Evaluation benchmarks (MathVista, MMMU, OCRBench)
+├── bench/           # Performance benchmarking framework
+├── server/          # FastAPI REST API (OpenAI-compatible)
+├── agents/          # Agent system (ReAct, Chain-of-Thought)
+├── gym/             # RL environment integrations
+├── data/            # Data module for dataset loading
+├── tools/           # CLI tools (download, convert, compare)
+├── kv_cache/        # KV cache implementations
+└── main.py          # Click CLI entry point (run via `python -m smlx.main`)
+```
+
+**`smlx/config/model_profiles.py`** holds per-model safe `max_tokens` / KV-cache /
+batch-size presets to prevent OOM on the 36GB M4 target. Prefer pulling parameters from
+here over hardcoding generation limits when adding a model.
+
+### Model Execution Framework
+
+Three-layer architecture for universal model handling:
+
+1. **Router** (`smlx_router.py`) - Detects model capabilities and routes to appropriate handler
+2. **Runner** (`smlx_runner.py`) - Executes inference with unified configuration
+3. **Manager** (`smlx_manager.py`) - Manages model lifecycle, caching, and telemetry
+
+**Universal model loading**:
+```python
+from smlx.models import load_model
+
+# Auto-detect model type and load
+model, tokenizer = load_model("mlx-community/SmolLM2-135M-Instruct")
+
+# With quantization
+model, tokenizer = load_model("mlx-community/SmolLM2-135M-Instruct", quantization="4bit")
+```
+
+### Implemented Models
+
+**Language Models**:
+- SmolLM2_135M, SmolLM2_360M
+
+**Vision-Language Models**:
+- SmolVLM_256M, SmolVLM_500M_Instruct, nanoVLM, Moondream2, TinyLLaVA
+
+**Audio Models**:
+- Whisper_tiny, Chatterbox (TTS), Orpheus_150M (TTS), YAMNet, SileroVAD
+
+**Document/OCR**:
+- TrOCR_small, Donut_base
+
+**Embeddings**:
+- MiniLM (full implementation in `MiniLM/model.py`)
+- all_MiniLM_L6_v2 (thin wrapper around MiniLM — no own `model.py`)
+
+**CAD Generation**:
+- smolGenCad — 158M text-to-CAD model (SmolLM2-135M encoder + custom 8-layer
+  transformer decoder for parametric CAD sequence generation)
+
+### Server Architecture (FastAPI)
+
+OpenAI-compatible REST API with:
+- `POST /v1/chat/completions` - Chat with message history
+- `POST /v1/completions` - Text completion
+- `POST /v1/audio/transcriptions` - Audio transcription
+- `POST /v1/embeddings` - Text embeddings
+- `GET /v1/models` - List available models
+
+**Running the server** — `smlx/server/app.py` does **not** parse CLI args; its
+`__main__` block hardcodes `0.0.0.0:8000` with `reload=True`. To control host/port, use
+the CLI command or invoke uvicorn directly:
+```bash
+# Preferred — Click CLI (accepts --host/--port/--reload/--log-level)
+python -m smlx.main server --host 0.0.0.0 --port 8000
+
+# Direct uvicorn (host/port via uvicorn flags)
+uvicorn smlx.server.app:app --host 0.0.0.0 --port 8000 --reload
+
+# Defaults only (0.0.0.0:8000, reload on) — no flags are honored here
+python -m smlx.server.app
+```
+
+## Critical Rules
+
+### 1. Never Import from `resources/`
+
+The `resources/` directory contains reference implementations from MLX ecosystem projects (mlx-lm, mlx-vlm, etc.). **DO NOT** import from these modules directly.
+
+**Correct approach**:
+1. Study implementation patterns in `resources/`
+2. Copy and adapt code into appropriate `smlx/` module
+3. Ensure implementation is suitable for "smol" models
+
+### 2. Don't Remove Stub Files
+
+If something is called but missing, it should be **implemented, not removed**. Many files exist as placeholders for planned features.
+
+### 3. Code Style
+
+- Line length: 100 characters (configured in pyproject.toml)
+- Use Black for formatting
+- Use Ruff for linting
+- Follow existing patterns from implemented models (SmolLM2_135M, Whisper_tiny)
+
+### 4. Model Implementation Pattern
+
+This is the **SmolLM2-style template** for text/VLM generation models — it is the common
+layout, **not** a universal one. Audio models legitimately differ: e.g. `Whisper_tiny`
+uses `audio.py` / `decoding.py` / `transcribe.py` / `tokenizer.py` / `vad.py` instead of
+`generate.py` / `config.py` / `cache.py`. Follow the layout that fits the model class;
+match an existing model of the same modality rather than forcing this exact file set.
+
+```
+smlx/models/YourModel/            # SmolLM2-style (language / VLM) layout
+├── __init__.py       # Public API exports
+├── model.py          # Core architecture (inherit from mlx.nn.Module)
+├── loader.py         # Load from HuggingFace Hub
+├── generate.py       # Generation logic (generate, stream_generate, chat)
+├── config.py         # Configuration management
+└── cache.py          # KV cache (if applicable)
+```
+
+**Key requirements**:
+- Must be < 1B parameters
+- Must use MLX operations throughout
+- Must support quantization (4-bit/8-bit)
+- Must follow existing API patterns
+
+### 5. Use Shared Utilities
+
+Prefer utilities from `smlx/utils/` over reimplementing:
+- `generation.py` - Text generation, streaming, chat
+- `sampling.py` - Token sampling (temperature, top-p, top-k)
+- `loading.py` - Model and tokenizer loading
+- `memory.py` - Memory profiling and management
+- `cache.py` - KV cache implementations
 
 ## Testing Guidelines
 
-### Custom Pytest Markers
+### Pytest Markers
 
-Use these markers to categorize tests (defined in [pytest.ini:39-47](pytest.ini#L39-L47)):
-
-- `@pytest.mark.unit` - Fast, isolated unit tests
-- `@pytest.mark.integration` - Integration tests (may require external services)
-- `@pytest.mark.slow` - Slow-running tests (skip with `-m "not slow"`)
-- `@pytest.mark.benchmark` - Performance benchmarking tests
-- `@pytest.mark.eval` - Evaluation tests (may require datasets)
-- `@pytest.mark.gpu` - Tests requiring GPU/MLX acceleration
-- `@pytest.mark.requires_model` - Tests that download models
-- `@pytest.mark.asyncio` - Async tests (auto-configured via pytest-asyncio in pytest.ini)
-
-Example:
+Use markers to categorize tests (defined in pytest.ini):
 
 ```python
-@pytest.mark.unit
-def test_quantization_utils():
-    # Fast unit test
-    pass
+@pytest.mark.unit            # Fast, isolated unit tests
+@pytest.mark.integration     # Integration tests (may require external services)
+@pytest.mark.slow            # Slow-running tests (skip with -m "not slow")
+@pytest.mark.benchmark       # Performance benchmarking
+@pytest.mark.eval            # Evaluation tests (may require datasets)
+@pytest.mark.gpu             # Requires GPU/MLX acceleration
+@pytest.mark.requires_model  # Downloads models
+@pytest.mark.requires_hf     # Requires the HuggingFace datasets library
+@pytest.mark.heavy_memory    # Needs significant memory (>3GB)
+@pytest.mark.streaming       # Uses streaming/buffering (may build up resources)
+@pytest.mark.asyncio         # Async test (asyncio_mode=auto makes this optional)
+```
 
-@pytest.mark.slow
-@pytest.mark.gpu
-def test_model_inference():
-    # Slow test requiring GPU
-    pass
+The marker is `eval`, **not** `evaluation`. `--strict-markers` rejects any marker not
+registered in `pytest.ini`. `tests/conftest.py` installs autouse fixtures that purge MLX
+memory after each test and each module — this is why integration tests must run serially
+(see the parallel-execution note above).
+
+### Test Structure
+
+```
+tests/
+├── unit/             # Fast unit tests
+├── integration/      # Integration tests
+├── quant/            # Quantization tests
+├── evals/            # Evaluation tests
+├── models/           # Model-specific tests
+├── server/           # Server API tests
+└── bench/            # Benchmark tests
+```
+
+## Data Directory (Git LFS)
+
+> The `data/{audio,benchmark,datasets,documents,images}/` skeleton exists (each with a
+> `.gitkeep`), but the **actual datasets are Git-LFS tracked and absent** until you
+> `git lfs pull` from a remote that hosts them. Code that needs a specific dataset file
+> will still fail until the files are pulled.
+
+The `data/` directory is tracked with Git LFS and contains:
+- `data/audio/` - Audio test files
+- `data/benchmark/` - Benchmark datasets
+- `data/datasets/` - Evaluation datasets (MathVista, MMMU, etc.)
+- `data/documents/` - Document images for OCR
+- `data/images/` - Test images for vision models
+
+**Important**: Run `git lfs pull` after cloning to download large files.
+
+## Quantization Support
+
+The `smlx/quant/` module provides comprehensive quantization:
+
+**Methods**:
+- GPTQ - Post-training quantization for language models
+- AWQ - Activation-aware weight quantization
+- Dynamic - Mixed-precision based on layer sensitivity
+- LoRA/DoRA - Parameter-efficient fine-tuning
+
+**Bit-widths**:
+- 4-bit, 6-bit, 8-bit integer quantization
+- FP4, FP8 floating-point formats
+- MXFP4, MXFP8 microscaling formats (OCP standard)
+- GGML formats (Q4_0, Q4_1, Q4_K, Q8_0) - llama.cpp compatible
+
+**Usage**:
+```python
+from smlx.quant import quantize_model, gptq_quantize, awq_quantize
+
+# Simple quantization
+model = quantize_model(model, bits=4, group_size=64)
+
+# GPTQ (better quality preservation)
+gptq_quantize(model, calibration_data)
+
+# AWQ (activation-aware)
+awq_quantize(model, calibration_data)
 ```
 
 ## Development Workflow
 
-Since this is an early-stage project with many stub files:
+1. **Check existing stubs** - Many files exist as placeholders
+2. **Reference resources** - Study patterns in `resources/` directory
+3. **Implement in smlx/** - Write implementations in appropriate module
+4. **Keep it small** - Remember: models must be "smol" (< 1B parameters)
+5. **Test** - Add tests with appropriate markers
+6. **Format and lint** - Run black and ruff before committing
 
-1. **Check existing stubs**: Many module files exist but are empty placeholders
-2. **Reference resources**: Look in `resources/` for implementation patterns
-3. **Implement in smlx/**: Write actual implementations in the `smlx/` package
-4. **Keep it small**: Remember the core requirement - models must be "smol"
-5. **Test**: Add tests in `tests/` directory with appropriate markers
-6. **Format and lint**: Run `black` and `ruff` before committing
+## Configuration Files
 
-### Version Control
+- `pyproject.toml` - Package metadata, dependencies, tool configs (black, ruff, mypy)
+- `pytest.ini` - Pytest configuration with custom markers
+- `environment.yml` - Conda environment specification
+- `setup.py` - Minimal wrapper for editable installs
+- `.gitattributes` - Git LFS configuration for data files
 
-This project uses Git with Git LFS for large file tracking. The repository is configured to track data files (models, datasets, audio files) using Git LFS.
+## Version Control
 
-**Important Git LFS Notes:**
-- Large files in `data/` directory are tracked with Git LFS
-- Run `git lfs install` if you haven't already
-- Use `git lfs pull` to download large files after cloning
+> The repo was `git init`'d (branch `main`) during the defect-fix pass, so the commands
+> below work. The working tree is currently **untracked** (no commits yet) — commit when
+> ready. Git LFS commands require `git lfs` installed and a remote that hosts the data.
+
+This project uses Git with Git LFS for large file tracking:
 
 ```bash
 # Check git status
@@ -596,140 +503,12 @@ git lfs ls-files
 git lfs pull
 ```
 
-## Implementation Patterns
-
-### Implementing New Models
-
-When adding a new "smol" model, follow the SmolLM2_135M structure as a reference:
-
-1. **Create model directory:** `smlx/models/YourModel/`
-
-2. **Implement core modules:**
-   - `model.py` - Model architecture (inherit from `mlx.nn.Module`)
-     - Define layers (Attention, MLP, TransformerBlock, etc.)
-     - Implement forward pass with proper MLX operations
-   - `loader.py` - Loading from HuggingFace Hub
-     - `load()` - Load model and tokenizer
-     - `load_model_from_path()` - Load from local path
-     - `save_model()` - Save model weights
-   - `generate.py` - Generation logic
-     - `generate()` - Basic text generation
-     - `stream_generate()` - Streaming generation
-     - `chat()` - Chat interface (if applicable)
-     - `sample()` - Token sampling strategies
-   - `config.py` - Model configuration
-     - Default config dictionary
-     - Config validation and loading
-   - `cache.py` - KV cache (if applicable for transformers)
-     - Standard KV cache
-     - Rotating KV cache for long sequences
-   - `__init__.py` - Export public API
-
-3. **Add example in `examples/your_model/`**
-   - Demonstrate basic usage
-   - Show streaming and chat (if applicable)
-   - Include generation configuration examples
-
-4. **Add integration test in `tests/integration/`**
-   - Test model loading
-   - Test generation
-   - Mark with `@pytest.mark.integration` and `@pytest.mark.requires_model`
-
-5. **Update this documentation**
-   - Add model to Available Models list
-   - Document any special features or requirements
-
-**Key Requirements:**
-
-- **Must be "smol"** (< 1B parameters preferred, < 500M ideal)
-- **Must work with MLX** on Apple Silicon
-- **Must support quantization** (4-bit/8-bit via `smlx.quant/`)
-- **Must follow existing API patterns** (load, generate, stream_generate)
-- **Use MLX operations** throughout (no PyTorch/TensorFlow)
-
-**Reference Implementation:** See `smlx/models/SmolLM2_135M/` for a complete, working example.
-
-### Working with Stub Files
-
-Most files in `smlx/` are currently empty placeholders. When implementing:
-
-1. **Don't remove stub files** - If something is called but missing, it should be implemented, not removed
-2. **Study reference implementations** - Browse `resources/mlx-examples/`, `resources/mlx-lm/`, and `resources/mlx-vlm/` for patterns
-3. **Copy and adapt** - Take relevant code from resources and adapt it for "smol" models
-4. **Maintain module boundaries** - Keep quantization in `smlx/quant/`, models in `smlx/models/`, etc.
-
-### MLX-Specific Patterns
-
-When implementing MLX models:
-
-- **Use MLX array operations** - Leverage `mlx.core` for tensor operations
-- **Lazy evaluation** - MLX uses lazy evaluation; call `mx.eval()` when needed
-- **Unified memory** - Take advantage of Apple's unified memory architecture
-- **Quantization support** - Most models should support 4-bit and 8-bit quantization via `smlx.quant/`
-
-### Quantization Architecture
-
-The `smlx/quant/` module provides multiple quantization techniques:
-
-- **AWQ** (`awq.py`) - Activation-aware Weight Quantization for preserving accuracy
-- **GPTQ** (`gptq.py`) - Post-training quantization for language models
-- **DWQ** (`dwq.py`) - Dynamic Weight Quantization
-- **LoRA** (`lora.py`) - Low-Rank Adaptation for parameter-efficient fine-tuning
-- **DoRA** (`dora.py`) - Weight-Decomposed Low-Rank Adaptation
-
-Reference implementations can be found in `resources/mlx-examples/lora/` and `resources/mlx-lm/`.
-
-### Evaluation Framework
-
-The `smlx/evals/` module is designed for multimodal benchmarking:
-
-- **Math-Vista** - Math reasoning with vision
-- **MMMU** - Massive Multi-discipline Multimodal Understanding
-- **MMStar** - Multimodal reasoning benchmark
-- **OCRBench** - OCR capability evaluation
-
-When implementing evals, follow patterns from `resources/mlx-vlm/` for vision-language tasks.
-
-## Additional Documentation
-
-### Module-Specific Documentation (in `docs/` directory)
-
-**Available:**
-
-- `Quant.md` - Quantization techniques and usage
-- `Eval.md` / `EVALUATION.md` - Evaluation framework and benchmarks
-- `PerformanceOptimization.md` - Performance tuning and optimization strategies
-
-**Planned (empty stubs):**
-
-- `ModelImplementations.md` - Model implementation patterns and guidelines
-- `Agents.md` - Agent system design
-- `Server.md` - Server architecture and API design
-- `Tools.md` - Tool utilities and CLI commands
-
-### Root-Level Documentation
-
-Quick reference guides in the project root:
-
-- **[QUICKSTART.md](QUICKSTART.md)** - Fast-track guide to getting started with SMLX
-- **[BENCHMARKS.md](BENCHMARKS.md)** - Comprehensive benchmarking guide and performance metrics
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines and workflow
-
-**Model Conversion Documentation** (PyTorch/TensorFlow → MLX):
-
-- **[CONVERSION_INDEX.md](CONVERSION_INDEX.md)** - Overview of conversion guides and quick navigation
-- **[CONVERSION_PATTERNS.md](CONVERSION_PATTERNS.md)** - Common PyTorch→MLX conversion patterns
-- **[CONVERSION_REFERENCE.md](CONVERSION_REFERENCE.md)** - Detailed conversion reference
-- **[CONVERSION_UPDATE_SUMMARY.md](CONVERSION_UPDATE_SUMMARY.md)** - Recent conversion updates
-
-**When converting models from PyTorch/TensorFlow**: Start with `CONVERSION_INDEX.md` for a step-by-step guide to adapting models to MLX.
-
-Consult available documents for module-specific and task-specific implementation details.
-
 ## Key Principles
 
-1. **Small models only** - This is the primary requirement for any model added
-2. **MLX-first** - All implementations should leverage MLX framework for Apple silicon
+1. **Small models only** - Core requirement: < 1B parameters
+2. **MLX-first** - Use MLX framework for Apple Silicon optimization
 3. **M4 optimized** - Target M4 chipset with 36GB unified memory
 4. **No direct resource imports** - Reference but don't import from `resources/`
-5. **Quantization by default** - Models should support quantization to reduce memory footprint
+5. **Quantization by default** - Models should support 4-bit/8-bit quantization
+6. **Shared utilities** - Reuse code from `smlx/utils/`
+7. **Consistent APIs** - Follow established patterns from SmolLM2_135M, Whisper_tiny

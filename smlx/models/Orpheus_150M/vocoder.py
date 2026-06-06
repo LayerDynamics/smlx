@@ -223,10 +223,22 @@ class UpsampleBlock(nn.Module):
         # Manual upsampling (nearest neighbor interpolation)
         # Repeat each frame 'stride' times
         batch, length, channels = x.shape
+        target_length = length * self.stride
         x_expanded = mx.repeat(x, self.stride, axis=1)  # (batch, length * stride, channels)
 
         # Apply convolution for smoothing
         x = self.conv(x_expanded)
+
+        # Ensure exact output length (trim or pad as needed)
+        current_length = x.shape[1]
+        if current_length != target_length:
+            if current_length > target_length:
+                # Trim excess
+                x = x[:, :target_length, :]
+            else:
+                # Pad with zeros
+                pad_amount = target_length - current_length
+                x = mx.pad(x, [(0, 0), (0, pad_amount), (0, 0)])
 
         return x
 

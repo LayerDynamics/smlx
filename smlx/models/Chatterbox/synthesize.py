@@ -5,6 +5,7 @@
 Speech synthesis functions for Chatterbox.
 
 Provides voice cloning, expressiveness control, and emotion-based synthesis.
+Includes audio output validation to detect silent or clipped audio.
 """
 
 from typing import Optional
@@ -15,6 +16,7 @@ import numpy as np
 from .config import AVAILABLE_EMOTIONS
 from .model import Chatterbox
 from .processor import ChatterboxProcessor
+from ...utils.validation import validate_audio_output
 
 
 def clone_voice(
@@ -64,6 +66,11 @@ def synthesize(
     emotion: str = "neutral",
     expressiveness: float = 0.5,
     sample_rate: int = 24000,
+    validate_output: bool = False,
+    check_clipping: bool = True,
+    check_silence: bool = True,
+    retry_on_failure: bool = False,
+    max_retries: int = 2,
 ) -> np.ndarray:
     """
     Synthesize speech with voice cloning and expressiveness.
@@ -76,6 +83,11 @@ def synthesize(
         emotion: Emotion ("neutral", "happy", "sad", "angry", etc.)
         expressiveness: Expressiveness scale [0, 1]
         sample_rate: Output sample rate
+        validate_output: Enable audio validation (silence/clipping detection)
+        check_clipping: Check for audio clipping (values > 1.0 or < -1.0)
+        check_silence: Check for silent audio (all zeros or near-zero)
+        retry_on_failure: Retry synthesis if validation fails
+        max_retries: Maximum number of retries on validation failure
 
     Returns:
         Audio waveform as numpy array
@@ -99,46 +111,95 @@ def synthesize(
         ...     emotion="happy",
         ...     expressiveness=0.9
         ... )
+        >>>
+        >>> # With validation
+        >>> audio = synthesize(
+        ...     model, processor,
+        ...     "Hello world",
+        ...     validate_output=True,
+        ...     retry_on_failure=True
+        ... )
     """
-    # Process text
-    input_ids = processor(text)
+    # Internal synthesis function for retry logic
+    def _synthesize_internal(current_expressiveness: float) -> np.ndarray:
+        # Process text
+        input_ids = processor(text)
 
-    # Add batch dimension
-    input_ids = mx.expand_dims(input_ids, axis=0)
+        # Add batch dimension
+        input_ids = mx.expand_dims(input_ids, axis=0)
 
-    # Get emotion ID
-    if emotion not in AVAILABLE_EMOTIONS:
-        print(f"Warning: Unknown emotion '{emotion}', using 'neutral'")
-        emotion = "neutral"
+        # Get emotion ID
+        emotion_to_use = emotion
+        if emotion_to_use not in AVAILABLE_EMOTIONS:
+            print(f"Warning: Unknown emotion '{emotion_to_use}', using 'neutral'")
+            emotion_to_use = "neutral"
 
-    emotion_id = mx.array([AVAILABLE_EMOTIONS.index(emotion)])
+        emotion_id = mx.array([AVAILABLE_EMOTIONS.index(emotion_to_use)])
 
-    # Clamp expressiveness
-    expressiveness = max(0.0, min(1.0, expressiveness))
+        # Clamp expressiveness
+        exp_clamped = max(0.0, min(1.0, current_expressiveness))
 
-    # Generate audio
-    mel, waveform = model(
-        input_ids=input_ids,
-        voice_embedding=voice_embedding,
-        emotion_id=emotion_id,
-        expressiveness=expressiveness,
-    )
+        # Generate audio
+        mel, waveform = model(
+            input_ids=input_ids,
+            voice_embedding=voice_embedding,
+            emotion_id=emotion_id,
+            expressiveness=exp_clamped,
+        )
 
-    # Remove batch dimension
-    waveform = waveform[0]
+        # Remove batch dimension
+        waveform = waveform[0]
 
-    # Convert to numpy
-    audio = np.array(waveform)
+        # Convert to numpy
+        audio = np.array(waveform)
 
-    # Normalize
-    if audio.max() > 0:
-        audio = audio / np.abs(audio).max()
+        # Normalize
+        if audio.max() > 0:
+            audio = audio / np.abs(audio).max()
 
-    print(
-        f"\nNote: Generated {len(audio)/sample_rate:.2f}s of placeholder audio"
-    )
-    print(f"Emotion: {emotion}, Expressiveness: {expressiveness:.1f}")
-    print("Load pre-trained weights from HuggingFace for actual synthesis")
+        return audio
+
+    # Retry loop with validation
+    current_expressiveness = expressiveness
+    for attempt in range(max(1, max_retries + 1 if retry_on_failure else 1)):
+        audio = _synthesize_internal(current_expressiveness)
+
+        # Validate output if enabled
+        if validate_output:
+            # Convert to MLX array for validation
+            audio_mx = mx.array(audio)
+
+            is_valid, reason = validate_audio_output(
+                audio_mx,
+                sample_rate=sample_rate,
+                check_clipping=check_clipping,
+                check_silence=check_silence,
+            )
+
+            if not is_valid and retry_on_failure and attempt < max_retries:
+                print(f"Audio validation failed: {reason}. Retrying (attempt {attempt + 2}/{max_retries + 1})...")
+                # Adjust expressiveness for retry
+                current_expressiveness = min(1.0, current_expressiveness * 1.2)
+                continue
+
+            if not is_valid and not retry_on_failure:
+                print(f"Warning: Audio validation failed: {reason}")
+
+        # Success or max retries reached
+        break
+
+    duration_s = len(audio) / sample_rate
+    if getattr(model, "weights_loaded", False):
+        print(f"\n✓ Generated {duration_s:.2f}s of audio")
+        print(f"Emotion: {emotion}, Expressiveness: {current_expressiveness:.1f}")
+    else:
+        # Honesty: without pre-trained model+vocoder weights this is noise.
+        print(
+            f"\n⚠ Produced {duration_s:.2f}s of audio from UNINITIALIZED (random) "
+            "weights — this is placeholder noise, not real synthesis."
+        )
+        print(f"Emotion: {emotion}, Expressiveness: {current_expressiveness:.1f}")
+        print("Load pre-trained weights from HuggingFace for actual synthesis")
 
     return audio
 

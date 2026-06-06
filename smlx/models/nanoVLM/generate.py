@@ -5,8 +5,10 @@
 Text generation for nanoVLM.
 
 Handles vision-language generation with streaming support.
+Includes output validation to detect and prevent gibberish outputs.
 """
 
+import logging
 from typing import Generator, Optional, Union
 
 import mlx.core as mx
@@ -14,78 +16,147 @@ from PIL import Image
 
 from .loader import Processor
 from .model import NanoVLM
+from ...utils.validation import validate_text_output
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_inputs(
     processor: Processor,
     prompt: str,
     image: Optional[Union[str, Image.Image]] = None,
+    image_token_id: int = 49150,
+    num_image_tokens: int = 49,
 ) -> dict:
     """
-    Prepare inputs for nanoVLM.
+    Prepare inputs for nanoVLM with proper image token insertion.
 
     Args:
         processor: Processor instance
-        prompt: Text prompt
+        prompt: Text prompt (should contain <image> placeholder)
         image: Optional image
+        image_token_id: Token ID for image placeholder (default: 49150)
+        num_image_tokens: Number of image tokens after pixel shuffle (default: 49 for 7x7)
 
     Returns:
-        Dictionary with input_ids, pixel_values, and image_token_mask
+        Dictionary with input_ids and pixel_values
+
+    Note:
+        Follows mlx-vlm pattern:
+        1. Splits prompt on "<image>" placeholder
+        2. Tokenizes each chunk separately
+        3. Inserts num_image_tokens (49) instances of image_token_id between chunks
+        4. Model will replace these tokens with actual vision embeddings
     """
-    # Process text
-    input_ids = processor.tokenizer.encode(prompt, return_tensors="np")
-    input_ids = mx.array(input_ids)
-
-    # Add batch dimension if needed
-    if len(input_ids.shape) == 1:
-        input_ids = mx.expand_dims(input_ids, axis=0)
-
-    inputs = {"input_ids": input_ids}
-
     # Process image if provided
     if image is not None:
+        # Process image
         pixel_values = processor.image_processor(image)
-        inputs["pixel_values"] = pixel_values
 
-        # Create image token mask
-        # For simplicity, assume image tokens are at the beginning
-        batch_size, seq_len = input_ids.shape
-        num_image_tokens = 196  # 14x14 patches
+        # Split prompt on <image> placeholder (mlx-vlm pattern)
+        if "<image>" in prompt:
+            chunks = prompt.split("<image>")
+            # Tokenize each chunk
+            chunk_ids = [
+                processor.tokenizer.encode(chunk, return_tensors="np")[0].tolist()
+                for chunk in chunks
+            ]
 
-        # Create mask: first num_image_tokens positions are 1, rest are 0
-        image_token_mask = mx.zeros((batch_size, seq_len), dtype=mx.int32)
-        if seq_len >= num_image_tokens:
-            image_token_mask[:, :num_image_tokens] = 1
+            # Insert num_image_tokens instances of image_token_id between chunks
+            # Example: "Describe <image>" -> [tokens("Describe ")] + [49150]*49 + [tokens("")]
+            input_ids = chunk_ids[0] + [image_token_id] * num_image_tokens + chunk_ids[1]
+        else:
+            # If no <image> placeholder, prepend image tokens before text (fallback)
+            text_ids = processor.tokenizer.encode(prompt, return_tensors="np")[0].tolist()
+            input_ids = [image_token_id] * num_image_tokens + text_ids
 
-        inputs["image_token_mask"] = image_token_mask
+        # Convert to MLX array with batch dimension
+        input_ids = mx.array([input_ids])
+
+        inputs = {
+            "input_ids": input_ids,
+            "pixel_values": pixel_values,
+        }
+    else:
+        # Text-only mode
+        text_ids = processor.tokenizer.encode(prompt, return_tensors="np")
+        text_ids = mx.array(text_ids)
+
+        # Add batch dimension if needed
+        if len(text_ids.shape) == 1:
+            text_ids = mx.expand_dims(text_ids, axis=0)
+
+        inputs = {"input_ids": text_ids}
 
     return inputs
 
 
-def sample(logits: mx.array, temperature: float = 1.0, top_p: float = 0.95) -> int:
+def sample(
+    logits: mx.array,
+    temperature: float = 0.5,
+    top_p: float = 1.0,
+    previous_tokens: Optional[list] = None,
+    repetition_penalty: float = 1.0,
+) -> int:
     """
-    Sample next token from logits.
+    Sample next token from logits with optional repetition penalty.
 
     Args:
         logits: Logits for next token
-        temperature: Sampling temperature
+        temperature: Sampling temperature (default 0.5 per mlx-vlm)
         top_p: Nucleus sampling threshold
+        previous_tokens: List of previously generated token IDs
+        repetition_penalty: Penalty for repeated tokens (>1.0 discourages repetition)
 
     Returns:
         Sampled token ID
     """
+    # CRITICAL: bfloat16 workaround for quantized models
+    # bfloat16 can cause kernel loading issues with cumsum operations
+    # Reference: mlx-vlm/mlx_vlm/sample_utils.py:15-18
+    if logits.dtype == mx.bfloat16:
+        logits = logits.astype(mx.float32)
+
+    # Apply repetition penalty
+    if previous_tokens and repetition_penalty != 1.0:
+        # Convert to list for indexing (MLX doesn't support item assignment)
+        logits_array = logits.tolist()
+        unique_previous = set(previous_tokens)
+
+        # Debug: print penalty info
+        import os
+        if os.getenv("SMLX_DEBUG") == "1":
+            print(f"  [PENALTY] Applying penalty={repetition_penalty} to {len(unique_previous)} unique tokens")
+
+        for token in unique_previous:
+            original_logit = logits_array[token]
+            if logits_array[token] > 0:
+                logits_array[token] /= repetition_penalty
+            else:
+                logits_array[token] *= repetition_penalty
+
+            # Debug: show first few penalties
+            if os.getenv("SMLX_DEBUG") == "1" and len(unique_previous) <= 5:
+                print(f"  [PENALTY] Token {token}: {original_logit:.4f} → {logits_array[token]:.4f}")
+
+        logits = mx.array(logits_array)
+
     if temperature == 0:
         # Greedy sampling
         return int(mx.argmax(logits, axis=-1))
 
-    # Apply temperature
-    logits = logits / temperature
+    # Convert to log probabilities (critical for numerical stability!)
+    # This matches mlx-lm's approach and avoids precision loss from softmax → log
+    logprobs = logits - mx.logsumexp(logits, keepdims=True)
 
-    # Softmax to get probabilities
-    probs = mx.softmax(logits, axis=-1)
+    # Apply temperature
+    logprobs = logprobs / temperature
 
     # Top-p (nucleus) sampling
     if top_p < 1.0:
+        # Convert to probabilities for top-p filtering
+        probs = mx.exp(logprobs)
+
         # Sort probabilities
         sorted_indices = mx.argsort(probs, axis=-1)[::-1]
         sorted_probs = probs[sorted_indices]
@@ -99,19 +170,19 @@ def sample(logits: mx.array, temperature: float = 1.0, top_p: float = 0.95) -> i
         if cutoff_idx == 0:
             cutoff_idx = len(sorted_probs)
 
-        # Keep only top-p tokens
+        # Keep only top-p tokens (in logprob space)
         top_indices = sorted_indices[:cutoff_idx]
-        top_probs = probs[top_indices]
+        top_logprobs = logprobs[top_indices]
 
-        # Renormalize
-        top_probs = top_probs / mx.sum(top_probs)
+        # Renormalize (in log space)
+        top_logprobs = top_logprobs - mx.logsumexp(top_logprobs)
 
         # Sample from top-p
-        token_idx = mx.random.categorical(mx.log(top_probs))
+        token_idx = mx.random.categorical(top_logprobs)
         token = int(top_indices[token_idx])
     else:
         # Sample from full distribution
-        token = int(mx.random.categorical(mx.log(probs)))
+        token = int(mx.random.categorical(logprobs))
 
     return token
 
@@ -122,8 +193,14 @@ def generate(
     prompt: str,
     image: Optional[Union[str, Image.Image]] = None,
     max_tokens: int = 128,
-    temperature: float = 1.0,
-    top_p: float = 0.95,
+    temperature: float = 0.5,
+    top_p: float = 1.0,
+    validate_output: bool = False,
+    max_repetition_ratio: float = 0.6,
+    check_gibberish: bool = True,
+    retry_on_failure: bool = False,
+    max_retries: int = 2,
+    min_length: int = 5,
 ) -> str:
     """
     Generate text from nanoVLM.
@@ -136,6 +213,12 @@ def generate(
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
         top_p: Nucleus sampling threshold
+        validate_output: Enable output validation (gibberish/repetition detection)
+        max_repetition_ratio: Maximum allowed repetition ratio
+        check_gibberish: Check for gibberish patterns
+        retry_on_failure: Retry generation if validation fails
+        max_retries: Maximum number of retries
+        min_length: Minimum output length
 
     Returns:
         Generated text
@@ -150,54 +233,93 @@ def generate(
         ...     max_tokens=100
         ... )
         >>> print(text)
+        >>>
+        >>> # With validation
+        >>> text = generate(
+        ...     model, processor,
+        ...     prompt="Describe this image:",
+        ...     image=image,
+        ...     validate_output=True,
+        ...     retry_on_failure=True
+        ... )
     """
-    # Prepare inputs
-    inputs = prepare_inputs(processor, prompt, image)
+    # Internal generation function for retry logic
+    def _generate_internal(current_temperature: float) -> str:
+        # Prepare inputs
+        inputs = prepare_inputs(processor, prompt, image)
 
-    input_ids = inputs["input_ids"]
-    pixel_values = inputs.get("pixel_values")
-    image_token_mask = inputs.get("image_token_mask")
+        input_ids = inputs["input_ids"]
+        pixel_values = inputs.get("pixel_values")
+        image_token_mask = inputs.get("image_token_mask")
 
-    # Generate tokens
-    generated_tokens = []
+        # Generate tokens
+        generated_tokens = []
 
-    for _ in range(max_tokens):
-        # Forward pass
-        logits = model(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            image_token_mask=image_token_mask,
+        for _ in range(max_tokens):
+            # Forward pass
+            logits = model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_token_mask=image_token_mask,
+            )
+
+            # Get logits for next token (last position)
+            next_token_logits = logits[0, -1, :]
+            # Evaluate to prevent computation graph accumulation
+            mx.eval(next_token_logits)
+
+            # Sample next token
+            next_token = sample(next_token_logits, current_temperature, top_p)
+
+            # Check for EOS
+            if next_token == processor.tokenizer.eos_token_id:
+                break
+
+            # Add to generated tokens
+            generated_tokens.append(next_token)
+
+            # Update input_ids for next iteration
+            next_token_array = mx.array([[next_token]])
+            input_ids = mx.concatenate([input_ids, next_token_array], axis=1)
+            # Evaluate to prevent graph accumulation from concatenation
+            mx.eval(input_ids)
+
+            # Clear image inputs after first token (only use once)
+            pixel_values = None
+            image_token_mask = None
+
+        # Decode generated tokens
+        generated_text = processor.tokenizer.decode(
+            generated_tokens, skip_special_tokens=True
         )
 
-        # Get logits for next token (last position)
-        next_token_logits = logits[0, -1, :]
-        # Evaluate to prevent computation graph accumulation
-        mx.eval(next_token_logits)
+        return generated_text
 
-        # Sample next token
-        next_token = sample(next_token_logits, temperature, top_p)
+    # Retry loop with validation
+    current_temperature = temperature
+    for attempt in range(max(1, max_retries + 1 if retry_on_failure else 1)):
+        generated_text = _generate_internal(current_temperature)
 
-        # Check for EOS
-        if next_token == processor.tokenizer.eos_token_id:
-            break
+        # Validate output if enabled
+        if validate_output:
+            is_valid, reason = validate_text_output(
+                generated_text,
+                min_length=min_length,
+                max_repetition_ratio=max_repetition_ratio,
+                check_gibberish=check_gibberish,
+            )
 
-        # Add to generated tokens
-        generated_tokens.append(next_token)
+            if not is_valid:
+                logger.warning(f"nanoVLM output validation failed: {reason}")
 
-        # Update input_ids for next iteration
-        next_token_array = mx.array([[next_token]])
-        input_ids = mx.concatenate([input_ids, next_token_array], axis=1)
-        # Evaluate to prevent graph accumulation from concatenation
-        mx.eval(input_ids)
+                if retry_on_failure and attempt < max_retries:
+                    logger.info(f"Retrying generation (attempt {attempt + 2}/{max_retries + 1})...")
+                    # Adjust temperature for retry (decrease for more deterministic output)
+                    current_temperature = max(0.1, current_temperature * 0.8)
+                    continue
 
-        # Clear image inputs after first token (only use once)
-        pixel_values = None
-        image_token_mask = None
-
-    # Decode generated tokens
-    generated_text = processor.tokenizer.decode(
-        generated_tokens, skip_special_tokens=True
-    )
+        # Success or max retries reached
+        break
 
     return generated_text
 
@@ -208,8 +330,8 @@ def stream_generate(
     prompt: str,
     image: Optional[Union[str, Image.Image]] = None,
     max_tokens: int = 128,
-    temperature: float = 1.0,
-    top_p: float = 0.95,
+    temperature: float = 0.5,
+    top_p: float = 1.0,
 ) -> Generator[str, None, None]:
     """
     Stream generated text token by token.
