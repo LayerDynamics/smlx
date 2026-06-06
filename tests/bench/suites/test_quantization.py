@@ -27,6 +27,7 @@ class MockModel:
 
     def parameters(self):
         """Return mock parameters."""
+
         class MockParam:
             def __init__(self, size):
                 self.size = size
@@ -176,24 +177,30 @@ class TestEstimateModelSize:
 class TestBenchmarkQuantizedModel:
     """Test benchmark_quantized_model function."""
 
-    @pytest.mark.skip(reason="Requires SmolLM2_135M model implementation")
+    @pytest.mark.requires_model
     def test_basic_benchmark(self):
-        """Test basic quantized model benchmark."""
-        model = MockModel("TestModel")
-        tokenizer = MockTokenizer()
+        """Test basic quantized model benchmark end-to-end with a real model.
+
+        benchmark_quantized_model runs real generation (generate/stream_generate),
+        so it needs an actual model — a mock cannot drive it. Gated by
+        requires_model.
+        """
+        from smlx.models.SmolLM2_135M import load
+
+        model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
 
         result = benchmark_quantized_model(
             model=model,
             tokenizer=tokenizer,
             quantization_method="fp16",
-            test_prompt="Test prompt",
+            test_prompt="The capital of France is",
             generation_tokens=10,
             verbose=False,
         )
 
         assert isinstance(result, QuantizationBenchmarkResult)
         assert result.quantization_method == "fp16"
-        assert result.model_name == "TestModel"
+        assert isinstance(result.model_name, str) and result.model_name
         assert result.prompt_tps > 0
         assert result.generation_tps > 0
 
@@ -411,6 +418,7 @@ class TestQuantizationHelpers:
 
         # Should be JSON-serializable
         import json
+
         json_str = json.dumps(data)
         loaded = json.loads(json_str)
 

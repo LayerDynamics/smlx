@@ -556,6 +556,7 @@ class TestImageProcessing:
         assert processor.image_size == 384
         # image_mean and image_std are numpy arrays, so we need to use np.allclose
         import numpy as np
+
         assert np.allclose(processor.image_mean.flatten(), [0.5, 0.5, 0.5])
         assert np.allclose(processor.image_std.flatten(), [0.5, 0.5, 0.5])
 
@@ -569,6 +570,75 @@ class TestImageProcessing:
         # image_mean and image_std are reshaped to (1, 1, 3) for broadcasting
         assert processor.image_mean.shape == (1, 1, 3)
         assert processor.image_std.shape == (1, 1, 3)
+
+
+# ============================================================================
+# Image-token merge (single & multiple images)
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestImageTokenMerge:
+    """Test prepare_inputs_for_generation injects image features at <image> tokens.
+
+    Exercised without a real model: image_features are supplied directly (so the
+    vision encoder is not called) and embed_tokens is stubbed, which isolates the
+    text/vision merge logic.
+    """
+
+    HIDDEN = 8
+    IMG_TOKEN = 999
+
+    def _fake_model(self):
+        import numpy as np
+
+        import mlx.core as mx
+
+        hidden = self.HIDDEN
+        img_token = self.IMG_TOKEN
+
+        class _LM:
+            def embed_tokens(self, ids):
+                arr = np.array(ids)[..., None].astype("float32")
+                return mx.broadcast_to(mx.array(arr), (ids.shape[0], ids.shape[1], hidden))
+
+        class _Cfg:
+            image_token_index = img_token
+
+        class _Fake:
+            config = _Cfg()
+            language_model = _LM()
+
+        return _Fake()
+
+    def test_single_image_injection(self):
+        import mlx.core as mx
+
+        feats = mx.arange(1 * 4 * self.HIDDEN).reshape(1, 4, self.HIDDEN).astype(mx.float32)
+        ids = mx.array([[1, self.IMG_TOKEN, 2]])  # 2 text tokens + 1 image (4 patches)
+        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
+            self._fake_model(), ids, image_features=feats
+        )
+        assert combined.shape == (1, 2 + 4, self.HIDDEN)
+
+    def test_multiple_image_injection(self):
+        import mlx.core as mx
+
+        feats = mx.arange(2 * 3 * self.HIDDEN).reshape(2, 3, self.HIDDEN).astype(mx.float32)
+        # text + <image> + text + <image> + text -> 3 text + 2*3 patches
+        ids = mx.array([[1, self.IMG_TOKEN, 2, self.IMG_TOKEN, 3]])
+        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
+            self._fake_model(), ids, image_features=feats
+        )
+        assert combined.shape == (1, 3 + 2 * 3, self.HIDDEN)
+
+    def test_image_count_mismatch_raises(self):
+        import mlx.core as mx
+
+        feats = mx.arange(1 * 3 * self.HIDDEN).reshape(1, 3, self.HIDDEN).astype(mx.float32)
+        ids = mx.array([[self.IMG_TOKEN, 1, self.IMG_TOKEN]])  # 2 tokens, 1 image
+        with pytest.raises(ValueError, match="does not match"):
+            TinyLLaVA.prepare_inputs_for_generation(self._fake_model(), ids, image_features=feats)
 
 
 # ============================================================================

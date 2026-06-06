@@ -22,10 +22,19 @@ from smlx.bench.stats import ModelBenchmarkStats
 
 
 class MockVLMModel:
-    """Mock vision-language model."""
+    """Mock vision-language model.
+
+    Implements the documented benchmark generation interface
+    ``generate(prompt, image, max_tokens, temperature) -> str`` so it can be
+    driven by benchmark_vlm without a real model.
+    """
 
     def __init__(self, name="MockVLM"):
         self.name = name
+
+    def generate(self, prompt=None, image=None, max_tokens=10, temperature=0.0, **kwargs):
+        """Return a deterministic mock generation of roughly max_tokens words."""
+        return " ".join(["token"] * max(1, int(max_tokens)))
 
 
 class MockProcessor:
@@ -101,7 +110,6 @@ class TestVLMBenchmarkConfig:
 class TestBenchmarkVLM:
     """Test benchmark_vlm function."""
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_with_image_path(self):
         """Test benchmarking with image path."""
         with TemporaryDirectory() as tmpdir:
@@ -130,7 +138,6 @@ class TestBenchmarkVLM:
             assert stats.prompt_tokens > 0
             assert stats.generation_tokens > 0
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_with_pil_image(self):
         """Test benchmarking with PIL Image."""
         img = create_test_image()
@@ -153,7 +160,6 @@ class TestBenchmarkVLM:
 
         assert isinstance(stats, ModelBenchmarkStats)
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_with_resize(self):
         """Test benchmarking with image resize."""
         img = create_test_image(size=(512, 512))
@@ -176,7 +182,6 @@ class TestBenchmarkVLM:
 
         assert isinstance(stats, ModelBenchmarkStats)
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_different_prompts(self):
         """Test with different prompts."""
         img = create_test_image()
@@ -205,7 +210,6 @@ class TestBenchmarkVLM:
 class TestBenchmarkVLMBatch:
     """Test benchmark_vlm_batch function."""
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_batch_with_multiple_images(self):
         """Test batch benchmarking with multiple images."""
         # Create test images
@@ -234,7 +238,6 @@ class TestBenchmarkVLMBatch:
         assert len(results) == 3
         assert all(isinstance(r, ModelBenchmarkStats) for r in results)
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_batch_with_image_paths(self):
         """Test batch with image file paths."""
         with TemporaryDirectory() as tmpdir:
@@ -260,7 +263,6 @@ class TestBenchmarkVLMBatch:
 
             assert len(results) == 2
 
-    @pytest.mark.skip(reason="Requires full VLM implementation")
     def test_batch_with_mixed_inputs(self):
         """Test batch with mixed PIL images and paths."""
         with TemporaryDirectory() as tmpdir:
@@ -403,6 +405,7 @@ class TestVLMHelpers:
 
         # Convert to dict (using dataclass asdict would work)
         from dataclasses import asdict
+
         data = asdict(config)
 
         assert data["max_tokens"] == 150
