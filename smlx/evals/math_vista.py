@@ -170,9 +170,7 @@ def normalize_answer(response: str, problem: dict) -> Optional[str]:
             return previous_row[-1]
 
         if choices:
-            distances = [
-                edit_distance(response.lower(), choice.lower()) for choice in choices
-            ]
+            distances = [edit_distance(response.lower(), choice.lower()) for choice in choices]
             return choices[distances.index(min(distances))]
 
     # === INTEGER EXTRACTION ===
@@ -476,13 +474,21 @@ def main():
     # Load dataset
     logging.info(f"Loading dataset {args.dataset}, split {args.split}")
     try:
-        from datasets import Dataset, load_dataset
+        from datasets import Dataset
     except ImportError:
         print("Error: datasets library not found.")
         print("Install with: pip install 'smlx[evals]'")
         return
 
-    dataset = load_dataset(args.dataset, split=args.split, streaming=args.streaming)
+    from smlx.evals.utils import resolve_eval_dataset
+
+    dataset, _ = resolve_eval_dataset(
+        "mathvista",
+        args.dataset,
+        args.split,
+        prefer_local=(args.dataset == "AI4Math/MathVista"),
+        streaming=args.streaming,
+    )
 
     if args.max_samples and not args.streaming:
         # Type guard: when streaming=False and split is specified, we get a Dataset

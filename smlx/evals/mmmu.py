@@ -269,11 +269,7 @@ def MMMU_eval(data: list, args, model_name: str):
             if best_match and best_match == answer_lower:
                 is_correct = True
             # Fallback: check first character
-            elif (
-                not best_match
-                and len(predict_lower) > 0
-                and predict_lower[0] in "abcdefi"
-            ):
+            elif not best_match and len(predict_lower) > 0 and predict_lower[0] in "abcdefi":
                 if predict_lower[0] == answer_lower:
                     is_correct = True
 
@@ -321,9 +317,9 @@ def MMMU_eval(data: list, args, model_name: str):
     # Calculate subject scores
     for subject in sorted(subject_scores.keys()):
         if subject_counters[subject] > 0:
-            results[f"subject_{subject}_accuracy"] = float(
-                subject_scores[subject]
-            ) / float(subject_counters[subject])
+            results[f"subject_{subject}_accuracy"] = float(subject_scores[subject]) / float(
+                subject_counters[subject]
+            )
             results[f"subject_{subject}_correct"] = subject_scores[subject]
             results[f"subject_{subject}_total"] = subject_counters[subject]
 
@@ -332,9 +328,7 @@ def MMMU_eval(data: list, args, model_name: str):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     subset_name = args.subset if args.subset else "all"
-    results_file = (
-        output_dir / f"{model_name}_MMMU_{subset_name}_{args.split}_predictions.csv"
-    )
+    results_file = output_dir / f"{model_name}_MMMU_{subset_name}_{args.split}_predictions.csv"
 
     with open(results_file, "w", newline="", encoding="utf-8") as f:
         if data:
@@ -343,9 +337,7 @@ def MMMU_eval(data: list, args, model_name: str):
             writer.writerows(data)
 
     # Save summary to JSON
-    summary_file = (
-        output_dir / f"{model_name}_MMMU_{subset_name}_{args.split}_score.json"
-    )
+    summary_file = output_dir / f"{model_name}_MMMU_{subset_name}_{args.split}_score.json"
     with open(summary_file, "w") as f:
         dump(results, f, indent=2)
 
@@ -588,7 +580,9 @@ def main():
 
     # Validate model argument for inference mode
     if not args.model:
-        print("Error: --model argument is required when not using --prediction-file or --list-subjects")
+        print(
+            "Error: --model argument is required when not using --prediction-file or --list-subjects"
+        )
         return
 
     logging.info("Starting MMMU evaluation")
@@ -612,7 +606,34 @@ def main():
     # Load subject datasets
     datasets = {}
 
-    if args.subset:
+    # Prefer the bundled local copy when usable: no --subset override, default
+    # repo, requested split present locally, non-streaming. The local MMMU is
+    # the combined all-subjects dataset, so we regroup it per subject via the
+    # id field ("<split>_<Subject>_<n>") to preserve the per-subject breakdown.
+    if not args.subset and not args.streaming and args.dataset == "MMMU/MMMU":
+        try:
+            from smlx.data import local as _local
+
+            if _local.is_available("mmmu") and args.split in _local.available_splits("mmmu"):
+                combined = _local.load("mmmu", split=args.split)
+                prefix = f"{args.split}_"
+                buckets: dict[str, list[int]] = {}
+                for i, ex_id in enumerate(combined["id"]):
+                    core = ex_id[len(prefix) :] if ex_id.startswith(prefix) else ex_id
+                    subject = core.rsplit("_", 1)[0] if "_" in core else core
+                    buckets.setdefault(subject, []).append(i)
+                for subject, idxs in buckets.items():
+                    datasets[subject] = combined.select(idxs)
+                rel = _local.local_path("mmmu").relative_to(_local.data_dir())
+                logging.info(
+                    f"Dataset source: local data/{rel} "
+                    f"(split={args.split}, {len(datasets)} subjects)"
+                )
+        except Exception as e:
+            logging.warning(f"Local MMMU load failed ({e}); using HuggingFace source")
+            datasets = {}
+
+    if not datasets and args.subset:
         logging.info(f"Using subset: {args.subset}")
         try:
             datasets[args.subset] = load_dataset(
@@ -624,7 +645,7 @@ def main():
         except Exception as e:
             print(f"Error loading dataset for {args.subset}: {e}")
             return
-    else:
+    elif not datasets:
         logging.info("Evaluating all 30 subjects")
         for subject in subjects:
             try:
@@ -701,9 +722,7 @@ def main():
                     images,
                     max_tokens=args.max_tokens,
                     temperature=args.temperature,
-                    resize_shape=tuple(args.resize_shape)
-                    if args.resize_shape
-                    else None,
+                    resize_shape=tuple(args.resize_shape) if args.resize_shape else None,
                     verbose=args.verbose,
                 )
 

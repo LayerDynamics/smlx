@@ -31,32 +31,19 @@ Adapted from MLX-LM, MLX-VLM, and other MLX ecosystem patterns.
 """
 
 # Loaders
-from .loaders import (
-    load_audio,
-    load_image,
-    load_text,
-    load_video,
-    resample_audio,
-)
+# Local bundled-dataset access (repo-root data/ tree).
+# The generic verbs (load/get/registry) are intentionally accessed via the
+# submodule -- ``from smlx.data import local; local.load("coco8")`` -- to avoid
+# polluting the package namespace; the well-named symbols are re-exported here.
+from . import local
 
-# Datasets
-from .datasets import (
-    AudioDataset,
-    CacheDataset,
-    ChatDataset,
-    CompletionsDataset,
-    ConcatenatedDataset,
-    SubsetDataset,
-    TextDataset,
-    VisionLanguageDataset,
-)
-
-# Preprocessing
-from .preprocessing import (
-    AudioPreprocessor,
-    ImagePreprocessor,
-    MultimodalPreprocessor,
-    TextPreprocessor,
+# Augmentation
+from .augmentation import (
+    AudioAugmentation,
+    Compose,
+    ImageAugmentation,
+    RandomApply,
+    RandomChoice,
 )
 
 # Batching
@@ -72,6 +59,18 @@ from .batch import (
     pad_sequences,
 )
 
+# Datasets
+from .datasets import (
+    AudioDataset,
+    CacheDataset,
+    ChatDataset,
+    CompletionsDataset,
+    ConcatenatedDataset,
+    SubsetDataset,
+    TextDataset,
+    VisionLanguageDataset,
+)
+
 # HuggingFace integration
 from .hf import (
     create_dataset,
@@ -81,14 +80,35 @@ from .hf import (
     load_local_dataset,
     save_dataset_to_jsonl,
 )
+from .loaders import (
+    load_audio,
+    load_image,
+    load_text,
+    load_video,
+    resample_audio,
+)
+from .local import (
+    DatasetEntry,
+    ImageTree,
+    JsonIndex,
+    Layout,
+    ProbeResult,
+    available_splits,
+    detect_layout,
+    find_orphans,
+    inventory,
+    is_available,
+    iter_samples,
+    local_path,
+    probe,
+)
 
-# Augmentation
-from .augmentation import (
-    AudioAugmentation,
-    Compose,
-    ImageAugmentation,
-    RandomApply,
-    RandomChoice,
+# Preprocessing
+from .preprocessing import (
+    AudioPreprocessor,
+    ImagePreprocessor,
+    MultimodalPreprocessor,
+    TextPreprocessor,
 )
 
 __all__ = [
@@ -135,4 +155,19 @@ __all__ = [
     "Compose",
     "RandomApply",
     "RandomChoice",
+    # Local bundled-dataset access
+    "local",
+    "DatasetEntry",
+    "ImageTree",
+    "JsonIndex",
+    "Layout",
+    "ProbeResult",
+    "available_splits",
+    "detect_layout",
+    "find_orphans",
+    "inventory",
+    "is_available",
+    "iter_samples",
+    "local_path",
+    "probe",
 ]
