@@ -33,9 +33,7 @@ def cli():
 @click.argument("model", type=str)
 @click.argument("prompt", type=str, required=False)
 @click.option("--image", "-i", type=click.Path(exists=True), help="Image file for VLM models")
-@click.option(
-    "--max-tokens", "-t", type=int, default=100, help="Maximum tokens to generate"
-)
+@click.option("--max-tokens", "-t", type=int, default=100, help="Maximum tokens to generate")
 @click.option("--temperature", type=float, default=0.7, help="Sampling temperature")
 @click.option("--stream/--no-stream", default=True, help="Stream output tokens")
 def generate(model, prompt, image, max_tokens, temperature, stream):
@@ -184,9 +182,7 @@ def server(host, port, reload, log_level):
     click.echo(f"Starting SMLX server on {host}:{port}")
     click.echo("API documentation available at: http://localhost:8000/docs")
 
-    uvicorn.run(
-        "smlx.server.app:app", host=host, port=port, reload=reload, log_level=log_level
-    )
+    uvicorn.run("smlx.server.app:app", host=host, port=port, reload=reload, log_level=log_level)
 
 
 @cli.command()
@@ -284,7 +280,9 @@ def download(models, datasets, download_all, model):
 @click.argument("audio_file", type=click.Path(exists=True))
 @click.option("--model", default="whisper-tiny", help="Whisper model variant")
 @click.option("--language", help="Audio language (auto-detected if not specified)")
-@click.option("--format", "output_format", default="text", help="Output format (text, json, srt, vtt)")
+@click.option(
+    "--format", "output_format", default="text", help="Output format (text, json, srt, vtt)"
+)
 @click.option("--output", "-o", type=click.Path(), help="Output file (stdout if not specified)")
 def transcribe(audio_file, model, language, output_format, output):
     """Transcribe audio files using Whisper.
@@ -333,6 +331,153 @@ def transcribe(audio_file, model, language, output_format, output):
         click.echo("-" * 60)
         click.echo(output_text)
         click.echo("-" * 60)
+
+
+@cli.group()
+def data():
+    """Inspect and use the bundled datasets under ``data/``.
+
+    \b
+    smlx data list                       # list datasets + presence
+    smlx data validate                   # health-check every dataset
+    smlx data preview wikitext -n 3      # preview samples
+    smlx data eval mathvista -m <model>  # run an eval on a real model
+    """
+    pass
+
+
+@data.command(name="list")
+def data_list():
+    """List all registered datasets and whether they are present on disk."""
+    from smlx.data import local, report
+
+    for line in report.list_lines(local.inventory(compute_size=False)):
+        click.echo(line)
+
+
+@data.command(name="validate")
+@click.option("--category", type=click.Choice(["benchmark", "training"]), help="Filter by category")
+@click.option("--no-size", is_flag=True, help="Skip on-disk size computation (faster)")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table")
+def data_validate(category, no_size, as_json):
+    """Probe every dataset: layout, splits, counts, size, single-sample load.
+
+    Exits non-zero if any present dataset fails to load (corrupt/unreadable).
+    """
+    import json as _json
+    from dataclasses import asdict
+
+    from smlx.data import local, report
+
+    results = local.inventory(compute_size=not no_size)
+    if category:
+        results = [r for r in results if r.category == category]
+    orphans = local.find_orphans()
+
+    if as_json:
+        payload = {
+            "data_dir": str(local.data_dir()),
+            "datasets": [{**asdict(r), "layout": r.layout.value} for r in results],
+            "orphans": orphans,
+        }
+        click.echo(_json.dumps(payload, indent=2))
+    else:
+        click.echo(f"SMLX data directory: {local.data_dir()}\n")
+        for line in report.inventory_lines(results, orphans=orphans, show_size=not no_size):
+            click.echo(line)
+
+    failed = [r for r in results if r.available and r.sample_ok is False]
+    if failed:
+        sys.exit(1)
+
+
+@data.command(name="preview")
+@click.argument("dataset")
+@click.option("--split", help="Split to preview (default: the dataset's default)")
+@click.option("-n", "--limit", type=int, default=5, help="Number of samples to show")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of text")
+def data_preview(dataset, split, limit, as_json):
+    """Preview samples from a dataset (no model loaded)."""
+    import json as _json
+
+    from smlx.data import local, report
+
+    if dataset not in local.registry():
+        click.echo(f"Unknown dataset '{dataset}'. Try: smlx data list", err=True)
+        sys.exit(2)
+    if not local.is_available(dataset):
+        click.echo(
+            f"Dataset '{dataset}' is not present on disk. Download it with:\n"
+            f"  python -m smlx.tools.download_data --dataset {dataset}",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        samples = list(local.iter_samples(dataset, split=split, limit=limit))
+    except Exception as exc:
+        click.echo(f"Failed to load samples from '{dataset}': {exc}", err=True)
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps({"dataset": dataset, "split": split, "samples": samples}, indent=2))
+    else:
+        for line in report.preview_lines(dataset, split, samples):
+            click.echo(line)
+
+
+# Friendly benchmark name -> eval module (each module exposes a CLI main()).
+_EVAL_MODULES = {
+    "mathvista": "smlx.evals.math_vista",
+    "mmmu": "smlx.evals.mmmu",
+    "mmstar": "smlx.evals.mmstar",
+    "ocrbench": "smlx.evals.ocrbench",
+}
+
+
+@data.command(
+    name="eval",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.argument("benchmark")
+@click.option("--model", "-m", required=True, help="Model id/path to evaluate")
+@click.argument("eval_args", nargs=-1, type=click.UNPROCESSED)
+def data_eval(benchmark, model, eval_args):
+    """Run a benchmark evaluation on a real model.
+
+    Thin launcher over the ``smlx.evals.*`` evaluators. Extra flags are passed
+    straight through, e.g.::
+
+        smlx data eval mathvista -m mlx-community/SmolVLM-256M-Instruct --max-samples 10
+
+    Note: the evaluators load the benchmark from their own configured source
+    (the HuggingFace repo). This command reports whether a local copy exists,
+    but does not force the eval to read it (most local copies are
+    ``save_to_disk`` directories the evaluator's ``load_dataset`` cannot
+    consume directly).
+    """
+    from importlib import import_module
+
+    if benchmark not in _EVAL_MODULES:
+        click.echo(
+            f"Unknown benchmark '{benchmark}'. Available: {', '.join(sorted(_EVAL_MODULES))}",
+            err=True,
+        )
+        sys.exit(2)
+
+    from smlx.data import local
+
+    if benchmark in local.registry() and local.is_available(benchmark):
+        rel = local.local_path(benchmark).relative_to(local.data_dir())
+        click.echo(f"Local copy present at: data/{rel}")
+    else:
+        click.echo(f"No local copy of '{benchmark}'; the evaluator will download it.")
+
+    mod_name = _EVAL_MODULES[benchmark]
+    click.echo(f"Running {mod_name} on model: {model}\n")
+    mod = import_module(mod_name)
+    sys.argv = [mod_name, "--model", model, *eval_args]
+    mod.main()
 
 
 def main():

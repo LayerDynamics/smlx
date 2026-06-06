@@ -209,9 +209,7 @@ def MMStar_eval(data: list, args, model_name: str):
 
     # Calculate overall accuracy
     if len(data) > 0:
-        MMStar_score["final score"] = float(MMStar_score["final score"]) / float(
-            len(data)
-        )
+        MMStar_score["final score"] = float(MMStar_score["final score"]) / float(len(data))
 
     # Save results to CSV
     output_dir = Path(args.output_dir)
@@ -234,9 +232,7 @@ def MMStar_eval(data: list, args, model_name: str):
     print("\n" + "=" * 80)
     print("MMStar Evaluation Results (SMLX)")
     print("=" * 80)
-    print(
-        f"\nFinal Score: {total_correct}/{len(data)} = {MMStar_score['final score']*100:.2f}%\n"
-    )
+    print(f"\nFinal Score: {total_correct}/{len(data)} = {MMStar_score['final score']*100:.2f}%\n")
 
     print("-" * 80)
     print("Category Scores:")
@@ -418,14 +414,20 @@ def main():
     # Load dataset
     logging.info(f"Loading dataset {args.dataset}, split {args.split}")
     try:
-        from datasets import Dataset, IterableDataset, load_dataset
+        from datasets import Dataset, IterableDataset
     except ImportError:
         print("Error: datasets library not found.")
         print("Install with: pip install 'smlx[evals]'")
         return
 
-    dataset_loaded = load_dataset(
-        args.dataset, split=args.split, streaming=args.streaming
+    from smlx.evals.utils import resolve_eval_dataset
+
+    dataset_loaded, _ = resolve_eval_dataset(
+        "mmstar",
+        args.dataset,
+        args.split,
+        prefer_local=(args.dataset == "Lin-Chen/MMStar"),
+        streaming=args.streaming,
     )
 
     # Handle streaming vs non-streaming datasets
@@ -493,7 +495,9 @@ def main():
             if args.verbose:
                 logging.info(f"\nQuestion: {question}")
                 logging.info(f"Answer: {example_dict['answer']}")
-                logging.info(f"Category: {example_dict['category']} / {example_dict['l2_category']}")
+                logging.info(
+                    f"Category: {example_dict['category']} / {example_dict['l2_category']}"
+                )
                 logging.info(f"Prediction: {prediction}")
 
         except Exception as e:

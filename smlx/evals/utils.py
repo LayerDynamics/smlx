@@ -5,9 +5,76 @@ This module provides shared utilities for running evaluations on vision-language
 and other multimodal models using the MLX framework on Apple Silicon.
 """
 
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from PIL import Image
+
+
+def resolve_eval_dataset(
+    local_name: str,
+    hf_dataset: str,
+    split: str,
+    *,
+    prefer_local: bool = True,
+    streaming: bool = False,
+    verbose: bool = True,
+) -> tuple[Any, str]:
+    """Resolve an evaluation dataset, preferring the bundled local copy.
+
+    Loads from the in-repo ``data/`` tree (via :mod:`smlx.data.local`) when all
+    of the following hold, otherwise falls back to ``datasets.load_dataset``:
+
+    - ``prefer_local`` is True (callers set this to False when the user
+      overrides ``--dataset`` away from its default, so an explicit choice is
+      always honoured),
+    - ``streaming`` was not requested (the local copies are materialised on
+      disk, not streamed),
+    - a local copy named ``local_name`` is present and exposes ``split``, and
+    - that local copy is a HuggingFace ``Dataset`` (i.e. drop-in compatible
+      with the evaluators' ``.select`` / row-iteration). Local copies stored in
+      a non-HF layout -- e.g. OCRBench's JSON index -- are skipped and the HF
+      source is used instead.
+
+    Args:
+        local_name: Dataset key in the ``smlx.data.local`` registry
+            (e.g. ``"mathvista"``).
+        hf_dataset: HuggingFace repo id to fall back to (usually ``args.dataset``).
+        split: Split name to load.
+        prefer_local: Whether to attempt the local copy at all.
+        streaming: Whether the caller requested a streaming dataset.
+        verbose: Print which source was selected.
+
+    Returns:
+        ``(dataset, source_description)`` where ``source_description`` records
+        whether the local or HuggingFace source was used.
+    """
+    from datasets import load_dataset
+
+    if prefer_local and not streaming:
+        try:
+            from smlx.data import local as local_data
+
+            if local_data.is_available(local_name) and split in local_data.available_splits(
+                local_name
+            ):
+                dataset = local_data.load(local_name, split=split)
+                # Only a HuggingFace Dataset is drop-in compatible with the
+                # evaluators (needs column_names / select / row iteration).
+                if hasattr(dataset, "column_names"):
+                    rel = local_data.local_path(local_name).relative_to(local_data.data_dir())
+                    source = f"local data/{rel} (split={split})"
+                    if verbose:
+                        print(f"  Dataset source: {source}")
+                    return dataset, source
+        except Exception as exc:
+            if verbose:
+                print(f"  (local dataset unavailable: {exc}; using HuggingFace source)")
+
+    dataset = load_dataset(hf_dataset, split=split, streaming=streaming)
+    source = f"HuggingFace {hf_dataset} (split={split})"
+    if verbose:
+        print(f"  Dataset source: {source}")
+    return dataset, source
 
 
 def inference(

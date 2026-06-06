@@ -25,6 +25,7 @@ from typing import Optional
 
 try:
     from datasets import load_dataset
+
     DATASETS_AVAILABLE = True
 except ImportError:
     DATASETS_AVAILABLE = False
@@ -210,7 +211,7 @@ TRAINING_DATASETS = {
     },
     "ljspeech": {
         "repo_id": "keithito/lj_speech",
-        "output_dir": "audio/tts/ljspeech",
+        "output_dir": "datasets/ljspeech",
         "split": "train",
         "count": None,  # Full dataset
         "size_mb": 2500,
@@ -247,7 +248,7 @@ TRAINING_DATASETS = {
     },
     "esc50": {
         "repo_id": "ashraq/esc50",
-        "output_dir": "audio/environmental/esc50",
+        "output_dir": "datasets/esc50",
         "split": "train",
         "count": None,  # Full 2000 samples
         "size_mb": 773,
@@ -368,12 +369,36 @@ def download_mmmu_all_subjects(split: str = "dev", save_to_data_dir: bool = True
 
     # All 30 MMMU subjects
     subjects = [
-        'Accounting', 'Agriculture', 'Architecture_and_Engineering', 'Art', 'Art_Theory',
-        'Basic_Medical_Science', 'Biology', 'Chemistry', 'Clinical_Medicine', 'Computer_Science',
-        'Design', 'Diagnostics_and_Laboratory_Medicine', 'Economics', 'Electronics',
-        'Energy_and_Power', 'Finance', 'Geography', 'History', 'Literature', 'Manage',
-        'Marketing', 'Materials', 'Math', 'Mechanical_Engineering', 'Music', 'Pharmacy',
-        'Physics', 'Psychology', 'Public_Health', 'Sociology'
+        "Accounting",
+        "Agriculture",
+        "Architecture_and_Engineering",
+        "Art",
+        "Art_Theory",
+        "Basic_Medical_Science",
+        "Biology",
+        "Chemistry",
+        "Clinical_Medicine",
+        "Computer_Science",
+        "Design",
+        "Diagnostics_and_Laboratory_Medicine",
+        "Economics",
+        "Electronics",
+        "Energy_and_Power",
+        "Finance",
+        "Geography",
+        "History",
+        "Literature",
+        "Manage",
+        "Marketing",
+        "Materials",
+        "Math",
+        "Mechanical_Engineering",
+        "Music",
+        "Pharmacy",
+        "Physics",
+        "Psychology",
+        "Public_Health",
+        "Sociology",
     ]
 
     output_dir = DATA_DIR / "benchmark" / "mmmu" / split
@@ -404,6 +429,7 @@ def download_mmmu_all_subjects(split: str = "dev", save_to_data_dir: bool = True
     # Combine all datasets
     print(f"\nCombining {len(all_datasets)} subjects...")
     from datasets import concatenate_datasets
+
     combined_dataset = concatenate_datasets(all_datasets)
 
     # Save combined dataset
@@ -452,8 +478,7 @@ def download_benchmark_dataset(
 
     if dataset_name not in BENCHMARK_DATASETS:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. "
-            f"Available: {list(BENCHMARK_DATASETS.keys())}"
+            f"Unknown dataset: {dataset_name}. " f"Available: {list(BENCHMARK_DATASETS.keys())}"
         )
 
     # Special handling for MMMU (requires downloading all 30 subjects)
@@ -465,11 +490,12 @@ def download_benchmark_dataset(
             # Download default split (dev)
             dataset_info = BENCHMARK_DATASETS[dataset_name]
             default_splits = [
-                s for s, info in dataset_info["splits"].items()
-                if info.get("default", False)
+                s for s, info in dataset_info["splits"].items() if info.get("default", False)
             ]
             if default_splits:
-                return download_mmmu_all_subjects(split=default_splits[0], save_to_data_dir=save_to_data_dir)
+                return download_mmmu_all_subjects(
+                    split=default_splits[0], save_to_data_dir=save_to_data_dir
+                )
             else:
                 # No default, download dev
                 return download_mmmu_all_subjects(split="dev", save_to_data_dir=save_to_data_dir)
@@ -497,8 +523,7 @@ def download_benchmark_dataset(
     else:
         # Download default splits
         splits_to_download = [
-            s for s, info in dataset_info["splits"].items()
-            if info.get("default", False)
+            s for s, info in dataset_info["splits"].items() if info.get("default", False)
         ]
 
     if not splits_to_download:
@@ -531,7 +556,9 @@ def download_benchmark_dataset(
                 if "task" in split_info:
                     task = split_info["task"]
                     actual_split = split_info["split"]
-                    dataset = load_dataset(repo_id, task, split=actual_split, trust_remote_code=True)
+                    dataset = load_dataset(
+                        repo_id, task, split=actual_split, trust_remote_code=True
+                    )
                     split_name = f"{task}_{actual_split}"
                 else:
                     dataset = load_dataset(repo_id, split=split_name, trust_remote_code=True)
@@ -562,11 +589,13 @@ def download_benchmark_dataset(
                 successful_splits.append(split_name)
 
         except Exception as e:
-            error_msg = str(e).split('\n')[0]  # Get first line of error
+            error_msg = str(e).split("\n")[0]  # Get first line of error
 
             # Check if this is the known "Feature type 'List'" compatibility issue
             if "Feature type 'List' not found" in str(e):
-                print("  ⏭ Skipped: Incompatible with datasets>=3.0 (deprecated 'List' feature type)")
+                print(
+                    "  ⏭ Skipped: Incompatible with datasets>=3.0 (deprecated 'List' feature type)"
+                )
                 print("    Workaround: pip install datasets==2.14.0 (then upgrade back)")
                 skipped_splits.append((split_name, "datasets v3.x compatibility"))
             else:
@@ -607,8 +636,7 @@ def download_training_dataset(dataset_name: str) -> Path:
     """
     if dataset_name not in TRAINING_DATASETS:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. "
-            f"Available: {list(TRAINING_DATASETS.keys())}"
+            f"Unknown dataset: {dataset_name}. " f"Available: {list(TRAINING_DATASETS.keys())}"
         )
 
     dataset_info = TRAINING_DATASETS[dataset_name]
@@ -634,6 +662,7 @@ def download_training_dataset(dataset_name: str) -> Path:
             # Extract if zip
             if zip_path.suffix == ".zip":
                 import zipfile
+
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
                 zip_path.unlink()  # Remove zip file
@@ -657,6 +686,7 @@ def download_training_dataset(dataset_name: str) -> Path:
             # Take subset if count specified
             if count and len(dataset) > count:
                 import random
+
                 indices = random.sample(range(len(dataset)), count)
                 dataset = dataset.select(indices)
 
@@ -673,15 +703,15 @@ def download_training_dataset(dataset_name: str) -> Path:
 
 def download_default_data() -> None:
     """Download all default datasets (included in repo)."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("DOWNLOADING DEFAULT DATA FOR SMLX")
-    print("="*70)
+    print("=" * 70)
     print("\nThis will download ~220 MB of default datasets:")
     print("  • Benchmark samples (MathVista, MMMU, MMStar, OCRBench)")
     print("  • Language benchmarks (WikiText-2, GLUE samples)")
     print("  • Audio samples (LibriSpeech, ESC-50, LJSpeech)")
     print("  • Image samples (COCO8)")
-    print("\n" + "="*70 + "\n")
+    print("\n" + "=" * 70 + "\n")
 
     # Download benchmark datasets (default splits only)
     print("\n[1/4] Downloading Benchmark Datasets...")
@@ -715,9 +745,9 @@ def download_default_data() -> None:
     print("Curated image test collection requires manual curation.")
     print("See data/images/README.md for instructions.")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("✓ DEFAULT DATA DOWNLOAD COMPLETE!")
-    print("="*70)
+    print("=" * 70)
     print(f"\nData location: {DATA_DIR}")
     print("\nNext steps:")
     print("  1. Review data/README.md for usage examples")
@@ -727,9 +757,9 @@ def download_default_data() -> None:
 
 def download_all_benchmarks() -> None:
     """Download all benchmark datasets (including non-default splits)."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("DOWNLOADING ALL BENCHMARK DATASETS")
-    print("="*70)
+    print("=" * 70)
     print("\nThis will download several GB of benchmark data.")
     print("This may take a while...\n")
 
@@ -749,10 +779,14 @@ def download_all_benchmarks() -> None:
                     if dataset_name not in failed_datasets and dataset_name not in skipped_datasets:
                         # Could be failed or skipped - check output
                         failed_datasets.append(dataset_name)
-                elif dataset_name not in successful_datasets and dataset_name not in skipped_datasets and dataset_name not in failed_datasets:
+                elif (
+                    dataset_name not in successful_datasets
+                    and dataset_name not in skipped_datasets
+                    and dataset_name not in failed_datasets
+                ):
                     successful_datasets.append(dataset_name)
         except Exception as e:
-            error_msg = str(e).split('\n')[0]
+            error_msg = str(e).split("\n")[0]
 
             # Check if it's a known compatibility issue
             if "Feature type 'List' not found" in str(e):
@@ -765,9 +799,9 @@ def download_all_benchmarks() -> None:
             continue
 
     # Report aggregate results
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("BENCHMARK DOWNLOAD SUMMARY")
-    print("="*70)
+    print("=" * 70)
 
     if successful_datasets:
         print(f"\n✓ Successfully downloaded ({len(successful_datasets)}):")
@@ -792,7 +826,7 @@ def download_all_benchmarks() -> None:
         if skipped_datasets:
             print(f"  ({len(skipped_datasets)} skipped due to compatibility)")
 
-    print("="*70)
+    print("=" * 70)
 
 
 def download_test_models(model_ids: Optional[list[str]] = None) -> None:
@@ -840,9 +874,9 @@ def download_test_models(model_ids: Optional[list[str]] = None) -> None:
 
 def list_available() -> None:
     """List available datasets and models."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("AVAILABLE BENCHMARK DATASETS")
-    print("="*70)
+    print("=" * 70)
     for name, info in BENCHMARK_DATASETS.items():
         print(f"\n  {name}")
         print(f"    {info['description']}")
@@ -851,9 +885,9 @@ def list_available() -> None:
         if "note" in info:
             print(f"    {info['note']}")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("AVAILABLE TRAINING/TESTING DATASETS")
-    print("="*70)
+    print("=" * 70)
     for name, info in TRAINING_DATASETS.items():
         print(f"\n  {name}")
         print(f"    {info['description']}")
@@ -861,16 +895,17 @@ def list_available() -> None:
         if "note" in info:
             print(f"    {info['note']}")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("AVAILABLE MODELS")
-    print("="*70)
+    print("=" * 70)
     for shortcut, repo_id in TEST_MODELS.items():
         print(f"  {shortcut:20s} -> {repo_id}")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("USAGE EXAMPLES")
-    print("="*70)
-    print("""
+    print("=" * 70)
+    print(
+        """
   # Download default data (included in repo)
   python -m smlx.tools.download_data --default-data
 
@@ -886,7 +921,8 @@ def list_available() -> None:
 
   # List everything
   python -m smlx.tools.download_data --list
-""")
+"""
+    )
 
 
 def main():

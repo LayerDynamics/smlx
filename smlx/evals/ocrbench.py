@@ -335,9 +335,7 @@ def main():
                 loaded_results = list(reader)
 
             model_name = Path(args.predictions_file).stem.split("_OCRBench")[0]
-            dataset = (
-                "OCRBench-v2" if "OCRBench-v2" in args.predictions_file else "OCRBench"
-            )
+            dataset = "OCRBench-v2" if "OCRBench-v2" in args.predictions_file else "OCRBench"
             OCRBench_val(loaded_results, args, model_name, dataset)
             logging.info("Evaluation complete")
             return
@@ -368,13 +366,25 @@ def main():
     # Load dataset
     logging.info(f"Loading dataset {args.dataset}, split {args.split}")
     try:
-        from datasets import Dataset, IterableDataset, load_dataset
+        from datasets import Dataset, IterableDataset
     except ImportError:
         print("Error: datasets library not found.")
         print("Install with: pip install 'smlx[evals]'")
         return
 
-    dataset = load_dataset(args.dataset, split=args.split, streaming=args.streaming)
+    from smlx.evals.utils import resolve_eval_dataset
+
+    # The bundled local OCRBench is OCRBench_v2 (a different schema, stored as a
+    # JSON index), so resolve_eval_dataset transparently falls back to the
+    # HuggingFace source here; the local-data path is exercised by the
+    # mathvista/mmstar/mmmu evaluators whose local copies are HF datasets.
+    dataset, _ = resolve_eval_dataset(
+        "ocrbench",
+        args.dataset,
+        args.split,
+        prefer_local=(args.dataset == "echo840/OCRBench"),
+        streaming=args.streaming,
+    )
 
     # Handle sample limiting based on dataset type
     if args.max_samples:
