@@ -162,9 +162,13 @@ def benchmark_vlm(
     # Set seed for reproducibility
     mx.random.seed(config.seed)
 
-    # Load image if path
+    # Load image if path. Use a context manager + copy so the file handle is
+    # closed deterministically (a bare Image.open is lazy and leaks the handle,
+    # which surfaces as a ResourceWarning).
     if isinstance(image, (str, Path)):
-        image = Image.open(image)
+        with Image.open(image) as _img:
+            _img.load()
+            image = _img.copy()
 
     # Resize if specified
     if config.resize_shape:
@@ -176,7 +180,12 @@ def benchmark_vlm(
 
     # Warmup
     _ = _generate_vlm(
-        model, processor, image, prompt, max_tokens=min(10, config.max_tokens), temperature=config.temperature
+        model,
+        processor,
+        image,
+        prompt,
+        max_tokens=min(10, config.max_tokens),
+        temperature=config.temperature,
     )
 
     # Clear cache after warmup
@@ -195,7 +204,12 @@ def benchmark_vlm(
         # Generate tokens
         gen_start = time.perf_counter()
         output, generation_tokens = _generate_vlm(
-            model, processor, image, prompt, max_tokens=config.max_tokens, temperature=config.temperature
+            model,
+            processor,
+            image,
+            prompt,
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
         )
         gen_end = time.perf_counter()
         generation_time = gen_end - gen_start
@@ -279,7 +293,7 @@ def _generate_vlm(
             # Count tokens in output
             num_tokens = len(processor.tokenizer.encode(generated_text))
             return generated_text, num_tokens
-        except (ImportError, AttributeError) as e:
+        except (ImportError, AttributeError):
             pass
 
     # Try nanoVLM
@@ -342,7 +356,32 @@ def _generate_vlm(
         except (ImportError, AttributeError):
             pass
 
-    # Generic fallback: try to use a generate method if available
+    # Generic path: any model exposing the documented simple benchmark interface
+    #   generate(prompt: str, image, max_tokens: int, temperature: float) -> str
+    # can be benchmarked directly (custom models, test doubles, etc.). Tried
+    # before the SmolVLM-style inputs path so it doesn't depend on a specific
+    # processor implementation.
+    if hasattr(model, "generate"):
+        try:
+            generated_text = model.generate(
+                prompt=prompt,
+                image=image,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            if isinstance(generated_text, str):
+                num_tokens = (
+                    len(processor.tokenizer.encode(generated_text))
+                    if hasattr(processor, "tokenizer")
+                    else len(generated_text.split())
+                )
+                return generated_text, num_tokens
+        except TypeError:
+            # Signature did not match the simple contract; fall through to the
+            # processor-driven path below.
+            pass
+
+    # Fallback: build model inputs with a SmolVLM-style processor, then generate.
     if hasattr(model, "generate"):
         try:
             # Prepare inputs

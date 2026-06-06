@@ -206,17 +206,39 @@ def gptq_quantize(
         Returns:
             Upper triangular Cholesky factor of inverse Hessian
         """
-        # Add damping to diagonal for numerical stability
-        damp = 1e-2 * mx.mean(mx.diag(H))
         diag = mx.arange(H.shape[0])
-        H[diag, diag] += damp
+        diag_vals = H[diag, diag]
+
+        # Dead input features (zero Hessian diagonal — an activation channel that
+        # is always zero, common for attention o_proj inputs) make H singular, so
+        # the Cholesky inverse comes back as NaN and corrupts the layer's weights.
+        # Set those diagonal entries to 1 so the factorization stays well-defined;
+        # such columns then receive a trivial, stable quantization update. This is
+        # the standard GPTQ dead-feature guard.
+        dead = diag_vals == 0
+        diag_vals = mx.where(dead, mx.ones_like(diag_vals), diag_vals)
+
+        # Add damping to the diagonal for numerical stability.
+        damp = 1e-2 * mx.mean(diag_vals)
+        damped_diag = diag_vals + damp
+        H[diag, diag] = damped_diag
 
         # Compute inverse via Cholesky decomposition (requires CPU in current MLX)
         cpu_device = mx.Device(mx.cpu)
         with mx.stream(mx.new_stream(cpu_device)):
-            H = mx.linalg.cholesky(H)
-            H = mx.linalg.cholesky_inv(H)
-            Hinv = mx.linalg.cholesky(H, upper=True)
+            chol = mx.linalg.cholesky(H)
+            inv = mx.linalg.cholesky_inv(chol)
+            Hinv = mx.linalg.cholesky(inv, upper=True)
+            mx.eval(Hinv)
+
+        # Some real-activation Hessians are too rank-deficient for a stable
+        # Cholesky even after the dead-feature guard + damping, and the factor
+        # comes back non-finite. Rather than let NaN corrupt the weights, fall
+        # back to a diagonal inverse: GPTQ then applies no cross-column error
+        # compensation for this layer (each column is simply quantized, i.e.
+        # plain per-group quantization), which is stable and never NaN.
+        if not bool(mx.all(mx.isfinite(Hinv))):
+            Hinv = mx.diag(1.0 / mx.sqrt(damped_diag))
 
         return Hinv
 

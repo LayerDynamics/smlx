@@ -157,12 +157,9 @@ class TinyLLaVA(nn.Module):
             # No image tokens found, return text only
             return text_embeddings, image_features
 
-        # Reshape image features for injection
-        num_images, num_patches, vision_hidden_size = image_features.shape
-        reshaped_image_features = image_features.reshape(-1, vision_hidden_size)
-
-        # Cast to match dtype
-        reshaped_image_features = reshaped_image_features.astype(text_embeddings.dtype)
+        # One <image> placeholder token is replaced by that image's patch
+        # features, so the number of images must match the number of tokens.
+        num_images = image_features.shape[0]
 
         if DEBUG:
             log_embedding_comparison(
@@ -173,16 +170,27 @@ class TinyLLaVA(nn.Module):
         # This replaces the single <image> token with num_patches features
         # Strategy: split text embeddings and insert image features
 
-        if len(image_positions) == 1:
-            # Single image: split at image token and insert features
-            pos = image_positions[0]
-            before = text_embeddings[:, :pos, :]
-            after = text_embeddings[:, pos+1:, :]  # Skip the <image> token itself
-            combined_embeddings = mx.concatenate([before, image_features, after], axis=1)
-        else:
-            # Multiple images: handle each position
-            # For simplicity, TinyLLaVA typically uses single image
-            raise NotImplementedError("Multiple image tokens not yet supported")
+        # Replace each <image> token (in order) with its image's patch features.
+        # Handles one or many images; each <image> placeholder maps to one image.
+        if len(image_positions) != num_images:
+            raise ValueError(
+                f"Number of <image> tokens ({len(image_positions)}) does not match "
+                f"the number of images ({num_images}); each <image> placeholder must "
+                f"correspond to exactly one image."
+            )
+
+        feats = image_features.astype(text_embeddings.dtype)
+        segments = []
+        prev = 0
+        for img_idx, pos in enumerate(sorted(image_positions)):
+            # Text tokens up to (not including) this <image> placeholder.
+            segments.append(text_embeddings[:, prev:pos, :])
+            # This image's patch embeddings: (1, num_patches, hidden_size).
+            segments.append(feats[img_idx : img_idx + 1])
+            prev = pos + 1  # Skip the <image> token itself.
+        # Trailing text after the last <image> token.
+        segments.append(text_embeddings[:, prev:, :])
+        combined_embeddings = mx.concatenate(segments, axis=1)
 
         return combined_embeddings, image_features
 
@@ -276,7 +284,9 @@ class TinyLLaVA(nn.Module):
             sanitized_weights[k] = v
 
         # Apply vision model-specific sanitization (conv2d weight transposition)
-        vision_weights = {k: v for k, v in sanitized_weights.items() if k.startswith("vision_tower.")}
+        vision_weights = {
+            k: v for k, v in sanitized_weights.items() if k.startswith("vision_tower.")
+        }
         vision_weights_sanitized = VisionModel.sanitize(vision_weights)
 
         # Update with sanitized vision weights

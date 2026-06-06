@@ -121,6 +121,7 @@ class TestGPTQQuantize:
 
     def create_test_model(self):
         """Create a small test model with Linear layers."""
+
         class SimpleModel(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -151,7 +152,7 @@ class TestGPTQQuantize:
             calibration_data,
             bits=4,
             group_size=32,  # Minimum supported group size
-            batch_size=4
+            batch_size=4,
         )
 
         # Model should still be callable
@@ -170,11 +171,7 @@ class TestGPTQQuantize:
 
         # Quantize
         quantized_model = gptq_quantize(
-            model,
-            calibration_data,
-            bits=4,
-            group_size=32,
-            batch_size=4
+            model, calibration_data, bits=4, group_size=32, batch_size=4
         )
 
         # After quantization - Linear layers should be QuantizedLinear
@@ -192,11 +189,7 @@ class TestGPTQQuantize:
 
         # Quantize with GPTQ (only Linear layers)
         quantized_model = gptq_quantize(
-            model,
-            calibration_data,
-            bits=4,
-            group_size=32,
-            batch_size=4
+            model, calibration_data, bits=4, group_size=32, batch_size=4
         )
 
         # Linear layers should be quantized
@@ -218,11 +211,7 @@ class TestGPTQQuantize:
 
         # Quantize
         quantized_model = gptq_quantize(
-            model,
-            calibration_data,
-            bits=4,
-            group_size=32,
-            batch_size=4
+            model, calibration_data, bits=4, group_size=32, batch_size=4
         )
 
         # Get output from quantized model
@@ -245,11 +234,7 @@ class TestGPTQQuantize:
             model = self.create_test_model()
 
             quantized_model = gptq_quantize(
-                model,
-                calibration_data,
-                bits=bits,
-                group_size=32,
-                batch_size=4
+                model, calibration_data, bits=bits, group_size=32, batch_size=4
             )
 
             # Check quantization applied
@@ -269,6 +254,7 @@ class TestGPTQM4Optimization:
 
     def test_default_parameters_optimized_for_m4(self):
         """Test that default parameters are optimized for M4."""
+
         # Create model that's large enough for default group_size=64
         class TinyModel(nn.Module):
             def __init__(self):
@@ -288,10 +274,56 @@ class TestGPTQM4Optimization:
             calibration_data,
             # bits=4 (default)
             # group_size=64 (default)
-            batch_size=4
+            batch_size=4,
         )
 
         # Should use 4-bit quantization with group_size=64 by default
         assert isinstance(quantized_model.linear, nn.QuantizedLinear)
         assert quantized_model.linear.bits == 4
         assert quantized_model.linear.group_size == 64
+
+
+@pytest.mark.unit
+@pytest.mark.gpu
+class TestGPTQDeadFeatures:
+    """Regression tests for the dead-feature / ill-conditioned-Hessian guard.
+
+    A singular Hessian (dead input channels — common for attention o_proj, whose
+    inputs can be all-zero on some dimensions) used to make the Cholesky inverse
+    return NaN, corrupting the quantized weights so the model emitted only EOS.
+    """
+
+    def _quantize_with_dead_inputs(self, dead_cols):
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = nn.Linear(128, 64, bias=False)
+
+            def __call__(self, x):
+                return self.linear(x)
+
+        model = TinyModel()
+        mx.eval(model.parameters())
+
+        # Calibration data with some input channels forced to zero -> those
+        # columns of H = X^T X are zero -> singular Hessian.
+        calibration_data = mx.random.normal((16, 128))
+        if dead_cols:
+            mask = mx.ones((128,))
+            for c in dead_cols:
+                mask[c] = 0.0
+            calibration_data = calibration_data * mask
+
+        quantized = gptq_quantize(model, calibration_data, bits=4, group_size=64, batch_size=4)
+        ql = quantized.linear
+        return mx.dequantize(ql.weight, ql.scales, ql.biases, ql.group_size, ql.bits)
+
+    def test_dead_input_channels_do_not_produce_nan(self):
+        """Dead/zero input channels must not yield NaN/inf quantized weights."""
+        weights = self._quantize_with_dead_inputs(dead_cols=[0, 5, 17, 63, 100])
+        assert bool(mx.all(mx.isfinite(weights))), "GPTQ produced non-finite weights"
+
+    def test_all_zero_calibration_is_stable(self):
+        """A fully degenerate (all-zero) Hessian still yields finite weights."""
+        weights = self._quantize_with_dead_inputs(dead_cols=list(range(128)))
+        assert bool(mx.all(mx.isfinite(weights)))
