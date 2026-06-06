@@ -19,6 +19,11 @@ from .model import SmolGenCad
 from .tokenizer import CADTokenizer
 from .validator import auto_fix_sequence, validate_sequence
 
+# Canonical CadQuery sketch planes (matches the SKETCH_START parameter spec in
+# commands.py). Used to guard the plane string that is interpolated into emitted
+# CadQuery code in sequence_to_python().
+_VALID_SKETCH_PLANES = frozenset({"XY", "XZ", "YZ"})
+
 
 def generate(
     model: SmolGenCad,
@@ -248,6 +253,13 @@ def sequence_to_python(sequence: list[tuple[CADCommandType, dict[str, Any]]]) ->
             in_sketch = True
             sketch_commands = []
             plane = params.get("plane", "XY")
+            # The plane string is interpolated verbatim into emitted code, so an
+            # out-of-spec value (or a stray quote) would produce broken Python.
+            # Restrict to the canonical CadQuery sketch planes (see commands.py),
+            # falling back to XY and flagging the substitution.
+            if plane not in _VALID_SKETCH_PLANES:
+                lines.append(f"# warning: invalid sketch plane {plane!r}, defaulting to 'XY'")
+                plane = "XY"
             lines.append(f"result = result.workplane('{plane}')")
 
         elif command == CADCommandType.SKETCH_END:

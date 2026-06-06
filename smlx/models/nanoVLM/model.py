@@ -22,15 +22,15 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-from .config import NanoVLMConfig
-from .projection import MLPProjection
-from .vision import VisionModel
-
 # Import diagnostics for debugging
 from smlx.utils.vlm_diagnostics import (
     log_logits_distribution,
     log_vision_features,
 )
+
+from .config import NanoVLMConfig
+from .projection import MLPProjection
+from .vision import VisionModel
 
 logger = logging.getLogger(__name__)
 

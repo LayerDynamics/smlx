@@ -22,6 +22,7 @@ from smlx.models.nanoVLM import (
     create_model,
     create_projection,
 )
+from smlx.utils.cache import make_cache
 
 # ============================================================================
 # Configuration Tests
@@ -308,6 +309,252 @@ class TestNanoVLMIntegration:
 
         # This is validated through the implementation
         assert model is not None
+
+
+# ============================================================================
+# KV-Cache Generation Tests
+# ============================================================================
+#
+# Regression coverage for the nanoVLM generation path (smlx/models/nanoVLM/
+# generate.py). Generation used to re-run the full forward over the growing
+# sequence every step (O(N^3)) AND clear pixel_values after the first token
+# while re-feeding the image markers as plain text — silently dropping the image
+# after token 0. The fix prefills once with a per-layer KV cache and then decodes
+# single tokens, which is linear AND keeps the image conditioning every token.
+#
+# These tests use small, randomly-initialized models (no weights download), so
+# they assert *internal consistency* of the cache mechanism rather than output
+# quality.
+
+
+@pytest.mark.unit
+class TestKVCacheGeneration:
+    """Guard KV-cache correctness and image-conditioning across decode steps."""
+
+    @staticmethod
+    def _small_config(vocab_size=1000, image_token_id=999):
+        """A tiny but structurally-faithful nanoVLM config.
+
+        image_size=224 / patch_size=16 -> 196 patches -> 49 vision tokens after
+        the projection's pixel shuffle, matching the default num_image_tokens.
+        """
+        return NanoVLMConfig(
+            vision_config=VisionConfig(
+                hidden_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                intermediate_size=512,
+                image_size=224,
+                patch_size=16,
+            ),
+            language_config=LanguageConfig(
+                hidden_size=192,
+                num_hidden_layers=4,
+                num_attention_heads=6,
+                num_key_value_heads=2,
+                intermediate_size=512,
+                vocab_size=vocab_size,
+            ),
+            projection_config=ProjectionConfig(
+                vision_hidden_size=256,
+                language_hidden_size=192,
+                num_layers=2,
+            ),
+            image_token_id=image_token_id,
+        )
+
+    def test_cached_decode_matches_full_forward_text_only(self):
+        """Cached prefill + single-token decode == one full forward.
+
+        This is the core correctness check for the KV cache: decoding token i
+        incrementally (with the cache holding tokens 0..i-1) must produce the
+        same logits as a full forward over tokens 0..i.
+        """
+        config = self._small_config()
+        model = NanoVLM(config)
+        model.eval()
+
+        # Deterministic text-only sequence; no token equals image_token_id (999).
+        token_ids = [5, 17, 42, 3, 99, 256, 7, 800]
+        ids = mx.array([token_ids])
+        seq_len = ids.shape[1]
+
+        # Reference: a single full forward over the whole sequence.
+        full = model(ids)  # (1, seq_len, vocab)
+        mx.eval(full)
+
+        cache = make_cache(len(model.language_model.model.layers))
+
+        # Prefill the first `p` tokens; the last prefill position must match the
+        # full forward at the same position.
+        p = 4
+        logits = model(ids[:, :p], cache=cache)
+        cached = logits[0, -1, :]
+        mx.eval(cached)
+        ref = full[0, p - 1, :]
+        max_diff = float(mx.max(mx.abs(cached - ref)))
+        assert max_diff < 1e-3, f"prefill mismatch (max abs diff {max_diff})"
+        assert int(mx.argmax(cached)) == int(mx.argmax(ref))
+
+        # Decode the remaining tokens one at a time.
+        for i in range(p, seq_len):
+            logits = model(ids[:, i : i + 1], cache=cache)
+            cached = logits[0, -1, :]
+            mx.eval(cached)
+            ref = full[0, i, :]
+            max_diff = float(mx.max(mx.abs(cached - ref)))
+            assert max_diff < 1e-3, f"decode step {i} mismatch (max abs diff {max_diff})"
+            assert int(mx.argmax(cached)) == int(mx.argmax(ref))
+
+    def test_image_conditions_all_decode_steps(self):
+        """Decode-step logits depend on the image (vision K/V live in the cache).
+
+        Same model, same fed token, two clearly-different images. Because the
+        image's keys/values are computed during prefill and retained in the
+        cache, the decode-step logits must differ. If the image were dropped
+        after prefill (the old bug), they would be identical.
+        """
+        image_token_id = 50
+        config = self._small_config(vocab_size=1000, image_token_id=image_token_id)
+        model = NanoVLM(config)
+        model.eval()
+
+        mx.random.seed(0)
+        # 49 image markers as a prefix + a few text tokens.
+        num_vision_tokens = 49
+        ids = mx.array([[image_token_id] * num_vision_tokens + [3, 4, 5]])
+        # Vision encoder expects NHWC: (batch, height, width, channels).
+        px_a = mx.random.normal((1, 224, 224, 3))
+        px_b = mx.random.normal((1, 224, 224, 3)) * 3.0 + 5.0  # clearly different
+        decode_token = mx.array([[7]])
+
+        def decode_logit(px):
+            cache = make_cache(len(model.language_model.model.layers))
+            model(ids, pixel_values=px, cache=cache)  # prefill (encode image)
+            out = model(decode_token, cache=cache)  # decode one token
+            logit = out[0, -1, :]
+            mx.eval(logit)
+            return logit
+
+        la = decode_logit(px_a)
+        lb = decode_logit(px_b)
+        max_diff = float(mx.max(mx.abs(la - lb)))
+        assert max_diff > 1e-3, (
+            "decode-step logits did not change with the image — the vision "
+            f"keys/values are not retained in the cache (max abs diff {max_diff})"
+        )
+
+    def test_generate_prefills_then_decodes_single_tokens(self, monkeypatch):
+        """generate() does one prefill (with image) then single-token decodes.
+
+        This guards the generate.py loop directly. It fails on the old
+        full-re-forward loop, which fed a growing sequence (seq_len 2, 3, 4, ...)
+        with no cache and re-passed/cleared pixel_values each step.
+        """
+        # prepare_inputs() hardcodes image_token_id=49150 / num_image_tokens=49,
+        # so the language vocab must cover 49150 for the embedding lookup.
+        config = NanoVLMConfig(
+            vision_config=VisionConfig(
+                hidden_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                intermediate_size=512,
+                image_size=224,
+                patch_size=16,
+            ),
+            language_config=LanguageConfig(
+                hidden_size=192,
+                num_hidden_layers=4,
+                num_attention_heads=6,
+                num_key_value_heads=2,
+                intermediate_size=512,
+                vocab_size=49152,
+            ),
+            projection_config=ProjectionConfig(
+                vision_hidden_size=256,
+                language_hidden_size=192,
+                num_layers=2,
+            ),
+        )
+        model = NanoVLM(config)
+        model.eval()
+
+        import numpy as np
+
+        from smlx.models.nanoVLM import generate as nano_generate
+
+        class _FakeTokenizer:
+            eos_token_id = -1  # never produced (sampled token ids are >= 0)
+
+            def encode(self, text, return_tensors=None):
+                toks = [1, 2, 3] if text else []
+                return np.array([toks], dtype=np.int64)
+
+            def decode(self, tokens, skip_special_tokens=True):
+                return " ".join(str(int(t)) for t in tokens)
+
+        class _FakeProcessor:
+            def __init__(self):
+                self.tokenizer = _FakeTokenizer()
+
+            def image_processor(self, image):
+                # NHWC format, matching the real ImageProcessor output.
+                return mx.zeros((1, 224, 224, 3))
+
+        processor = _FakeProcessor()
+
+        calls = []
+        orig_call = NanoVLM.__call__
+
+        def spy_call(
+            self,
+            input_ids,
+            pixel_values=None,
+            image_token_mask=None,
+            mask=None,
+            cache=None,
+        ):
+            calls.append(
+                {
+                    "seq_len": int(input_ids.shape[1]),
+                    "has_pixels": pixel_values is not None,
+                    "has_cache": cache is not None,
+                }
+            )
+            return orig_call(
+                self,
+                input_ids,
+                pixel_values=pixel_values,
+                image_token_mask=image_token_mask,
+                mask=mask,
+                cache=cache,
+            )
+
+        monkeypatch.setattr(NanoVLM, "__call__", spy_call)
+
+        max_tokens = 4
+        text = nano_generate(
+            model,
+            processor,
+            prompt="Describe <image>",
+            image=object(),
+            max_tokens=max_tokens,
+            temperature=0.0,
+        )
+
+        assert isinstance(text, str)
+        # 1 prefill + (max_tokens - 1) single-token decodes (the final token is
+        # appended without an unnecessary trailing decode).
+        assert len(calls) == max_tokens
+        # Prefill: full prompt, image present, cache present.
+        assert calls[0]["has_pixels"] is True
+        assert calls[0]["has_cache"] is True
+        assert calls[0]["seq_len"] > 1
+        # Decode steps: single token, no image re-encode, cache present.
+        for c in calls[1:]:
+            assert c["seq_len"] == 1, "decode step must feed a single token (KV cache)"
+            assert c["has_pixels"] is False
+            assert c["has_cache"] is True
 
 
 if __name__ == "__main__":

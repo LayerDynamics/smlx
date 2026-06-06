@@ -20,6 +20,15 @@ from .cache import (
     make_cache,
 )
 
+# Import chat template utilities
+from .chat_templates import (
+    MODEL_FORMATS,
+    MessageFormat,
+    apply_chat_template,
+    get_image_token_for_model,
+    validate_image_count,
+)
+
 # Import configuration utilities
 from .config import (
     AUDIO_MODEL_DEFAULTS,
@@ -91,6 +100,30 @@ from .memory import (
     reset_peak_memory,
 )
 
+# Import quality metrics utilities
+from .quality_metrics import (
+    QualityComparison,
+    QualityMetrics,
+    analyze_repetition,
+    analyze_token_distribution,
+    assess_quality,
+    calculate_diversity_score,
+    calculate_entropy,
+    calculate_perplexity,
+    compare_quality,
+)
+
+# Import quantization utilities
+from .quantization import (
+    apply_quantization,
+    count_quantizable_layers,
+    create_class_predicate,
+    estimate_quantized_size,
+    get_quantization_config,
+    get_quantization_info,
+    has_quantizable_layers,
+)
+
 # Import sampling utilities
 from .sampling import (
     categorical_sampling,
@@ -122,17 +155,6 @@ from .timing import (
     timer,
 )
 
-# Import quantization utilities
-from .quantization import (
-    apply_quantization,
-    count_quantizable_layers,
-    create_class_predicate,
-    estimate_quantized_size,
-    get_quantization_config,
-    get_quantization_info,
-    has_quantizable_layers,
-)
-
 # Import validation utilities
 from .validation import (
     OutputValidator,
@@ -142,18 +164,6 @@ from .validation import (
     validate_tokens,
 )
 
-# Import quality metrics utilities
-from .quality_metrics import (
-    QualityMetrics,
-    analyze_repetition,
-    analyze_token_distribution,
-    assess_quality,
-    calculate_diversity_score,
-    calculate_entropy,
-    calculate_perplexity,
-    compare_quality,
-)
-
 # Import VLM diagnostics utilities
 from .vlm_diagnostics import (
     compare_with_reference,
@@ -161,15 +171,6 @@ from .vlm_diagnostics import (
     log_embedding_comparison,
     log_logits_distribution,
     log_vision_features,
-)
-
-# Import chat template utilities
-from .chat_templates import (
-    MessageFormat,
-    MODEL_FORMATS,
-    apply_chat_template,
-    get_image_token_for_model,
-    validate_image_count,
 )
 
 # Image Utilities
@@ -802,6 +803,7 @@ __all__ = [
     "validate_tokens",
     # Quality metrics utilities
     "QualityMetrics",
+    "QualityComparison",
     "calculate_perplexity",
     "calculate_entropy",
     "analyze_repetition",

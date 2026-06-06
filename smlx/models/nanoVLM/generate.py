@@ -9,14 +9,16 @@ Includes output validation to detect and prevent gibberish outputs.
 """
 
 import logging
-from typing import Generator, Optional, Union
+from collections.abc import Generator
+from typing import Optional, Union
 
 import mlx.core as mx
 from PIL import Image
 
+from ...utils.cache import make_cache
+from ...utils.validation import validate_text_output
 from .loader import Processor
 from .model import NanoVLM
-from ...utils.validation import validate_text_output
 
 logger = logging.getLogger(__name__)
 
@@ -252,23 +254,32 @@ def generate(
         pixel_values = inputs.get("pixel_values")
         image_token_mask = inputs.get("image_token_mask")
 
-        # Generate tokens
+        # One KV cache per language-model layer. The cache lets us run the full
+        # prompt once (prefill) and then feed a single new token per decode step,
+        # turning generation from O(N^3) (full re-forward each step) into O(N^2).
+        # It also fixes image conditioning: the vision-augmented keys/values for
+        # the image-token positions are computed during prefill and reused on
+        # every decode step, so the image conditions ALL generated tokens. (The
+        # previous full-re-forward loop cleared pixel_values after the first
+        # token while re-feeding the image markers as plain text, silently
+        # dropping the image after token 0.)
+        cache = make_cache(len(model.language_model.model.layers))
+
+        # Prefill: encode the entire prompt (and image) in a single forward.
+        logits = model(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            image_token_mask=image_token_mask,
+            cache=cache,
+        )
+        next_token_logits = logits[0, -1, :]
+        # Evaluate to prevent computation graph accumulation
+        mx.eval(next_token_logits)
+
+        # Decode: one forward per new token, reusing the cache.
         generated_tokens = []
-
         for _ in range(max_tokens):
-            # Forward pass
-            logits = model(
-                input_ids=input_ids,
-                pixel_values=pixel_values,
-                image_token_mask=image_token_mask,
-            )
-
-            # Get logits for next token (last position)
-            next_token_logits = logits[0, -1, :]
-            # Evaluate to prevent computation graph accumulation
-            mx.eval(next_token_logits)
-
-            # Sample next token
+            # Sample next token from the most recent logits
             next_token = sample(next_token_logits, current_temperature, top_p)
 
             # Check for EOS
@@ -278,15 +289,18 @@ def generate(
             # Add to generated tokens
             generated_tokens.append(next_token)
 
-            # Update input_ids for next iteration
-            next_token_array = mx.array([[next_token]])
-            input_ids = mx.concatenate([input_ids, next_token_array], axis=1)
-            # Evaluate to prevent graph accumulation from concatenation
-            mx.eval(input_ids)
+            # Stop before an unnecessary final decode once the cap is reached.
+            if len(generated_tokens) >= max_tokens:
+                break
 
-            # Clear image inputs after first token (only use once)
-            pixel_values = None
-            image_token_mask = None
+            # Decode step: feed only the new token; the cache holds all past
+            # keys/values (text + vision). pixel_values is omitted because the
+            # image is already encoded in the cache.
+            next_token_array = mx.array([[next_token]])
+            logits = model(input_ids=next_token_array, cache=cache)
+            next_token_logits = logits[0, -1, :]
+            # Evaluate to prevent compute graph accumulation
+            mx.eval(next_token_logits)
 
         # Decode generated tokens
         generated_text = processor.tokenizer.decode(
@@ -365,20 +379,25 @@ def stream_generate(
     pixel_values = inputs.get("pixel_values")
     image_token_mask = inputs.get("image_token_mask")
 
-    # Generate tokens
+    # One KV cache per language-model layer (see generate() for the full
+    # rationale): prefill the prompt once, then decode single tokens reusing the
+    # cache so generation is linear and stays image-conditioned for every token.
+    cache = make_cache(len(model.language_model.model.layers))
+
+    # Prefill: encode the entire prompt (and image) in a single forward.
+    logits = model(
+        input_ids=input_ids,
+        pixel_values=pixel_values,
+        image_token_mask=image_token_mask,
+        cache=cache,
+    )
+    next_token_logits = logits[0, -1, :]
+    # Evaluate to prevent computation graph accumulation
+    mx.eval(next_token_logits)
+
+    # Decode: one forward per new token, reusing the cache.
+    generated_count = 0
     for _ in range(max_tokens):
-        # Forward pass
-        logits = model(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            image_token_mask=image_token_mask,
-        )
-
-        # Get logits for next token
-        next_token_logits = logits[0, -1, :]
-        # Evaluate to prevent computation graph accumulation
-        mx.eval(next_token_logits)
-
         # Sample
         next_token = sample(next_token_logits, temperature, top_p)
 
@@ -390,15 +409,19 @@ def stream_generate(
         token_text = processor.tokenizer.decode([next_token], skip_special_tokens=True)
         yield token_text
 
-        # Update input_ids
-        next_token_array = mx.array([[next_token]])
-        input_ids = mx.concatenate([input_ids, next_token_array], axis=1)
-        # Evaluate to prevent graph accumulation from concatenation
-        mx.eval(input_ids)
+        generated_count += 1
+        # Stop before an unnecessary final decode once the cap is reached.
+        if generated_count >= max_tokens:
+            break
 
-        # Clear image after first token
-        pixel_values = None
-        image_token_mask = None
+        # Decode step: feed only the new token; the cache holds all past
+        # keys/values (text + vision). pixel_values is omitted because the
+        # image is already encoded in the cache.
+        next_token_array = mx.array([[next_token]])
+        logits = model(input_ids=next_token_array, cache=cache)
+        next_token_logits = logits[0, -1, :]
+        # Evaluate to prevent compute graph accumulation
+        mx.eval(next_token_logits)
 
 
 def caption(

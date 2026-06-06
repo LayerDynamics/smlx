@@ -6,6 +6,7 @@ Unit tests for TinyLLaVA vision-language model implementation.
 Tests the vision encoder, language model, configuration, and forward pass.
 """
 
+import mlx.core as mx
 import pytest
 
 from smlx.models.TinyLLaVA import (
@@ -316,7 +317,6 @@ class TestPerceiverResamplerComponents:
 
     def test_perceiver_cross_attention_creation(self):
         """Test PerceiverCrossAttention module creation."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import PerceiverCrossAttention
 
         attn = PerceiverCrossAttention(
@@ -333,7 +333,6 @@ class TestPerceiverResamplerComponents:
 
     def test_perceiver_cross_attention_forward(self):
         """Test PerceiverCrossAttention forward pass."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import PerceiverCrossAttention
 
         attn = PerceiverCrossAttention(
@@ -366,7 +365,6 @@ class TestPerceiverResamplerComponents:
 
     def test_gated_mlp_forward(self):
         """Test GatedMLP forward pass."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import GatedMLP
 
         mlp = GatedMLP(dim=768, hidden_dim=3072, output_size=768)
@@ -401,7 +399,6 @@ class TestPerceiverResamplerComponents:
 
     def test_perceiver_layer_forward(self):
         """Test PerceiverLayer forward pass."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import PerceiverLayer
 
         layer = PerceiverLayer(
@@ -449,7 +446,6 @@ class TestPerceiverResamplerComponents:
 
     def test_resampler_projector_forward(self):
         """Test ResamplerProjector forward pass."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import ResamplerProjector
 
         projector = ResamplerProjector(
@@ -476,7 +472,6 @@ class TestPerceiverResamplerComponents:
 
     def test_resampler_latents_initialization(self):
         """Test that resampler latents are initialized to ones (not zeros)."""
-        import mlx.core as mx
         from smlx.models.TinyLLaVA.connector import ResamplerProjector
 
         projector = ResamplerProjector(
@@ -592,7 +587,6 @@ class TestImageTokenMerge:
     def _fake_model(self):
         import numpy as np
 
-        import mlx.core as mx
 
         hidden = self.HIDDEN
         img_token = self.IMG_TOKEN
@@ -612,7 +606,6 @@ class TestImageTokenMerge:
         return _Fake()
 
     def test_single_image_injection(self):
-        import mlx.core as mx
 
         feats = mx.arange(1 * 4 * self.HIDDEN).reshape(1, 4, self.HIDDEN).astype(mx.float32)
         ids = mx.array([[1, self.IMG_TOKEN, 2]])  # 2 text tokens + 1 image (4 patches)
@@ -622,7 +615,6 @@ class TestImageTokenMerge:
         assert combined.shape == (1, 2 + 4, self.HIDDEN)
 
     def test_multiple_image_injection(self):
-        import mlx.core as mx
 
         feats = mx.arange(2 * 3 * self.HIDDEN).reshape(2, 3, self.HIDDEN).astype(mx.float32)
         # text + <image> + text + <image> + text -> 3 text + 2*3 patches
@@ -633,11 +625,66 @@ class TestImageTokenMerge:
         assert combined.shape == (1, 3 + 2 * 3, self.HIDDEN)
 
     def test_image_count_mismatch_raises(self):
-        import mlx.core as mx
 
         feats = mx.arange(1 * 3 * self.HIDDEN).reshape(1, 3, self.HIDDEN).astype(mx.float32)
         ids = mx.array([[self.IMG_TOKEN, 1, self.IMG_TOKEN]])  # 2 tokens, 1 image
         with pytest.raises(ValueError, match="does not match"):
+            TinyLLaVA.prepare_inputs_for_generation(self._fake_model(), ids, image_features=feats)
+
+    def test_batched_injection_places_features_in_correct_row(self):
+        """Batch>1: each row's image lands in that row, not flattened across rows."""
+        import numpy as np
+
+
+        patches = 2
+        # Two rows, each with one <image> token at a different column.
+        ids = mx.array(
+            [
+                [1, self.IMG_TOKEN, 2, 3],  # image at col 1
+                [4, 5, self.IMG_TOKEN, 6],  # image at col 2
+            ]
+        )
+        # Row 0 -> image 0 (all 100.0), row 1 -> image 1 (all 200.0).
+        feats = mx.concatenate(
+            [
+                mx.full((1, patches, self.HIDDEN), 100.0),
+                mx.full((1, patches, self.HIDDEN), 200.0),
+            ],
+            axis=0,
+        )
+        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
+            self._fake_model(), ids, image_features=feats
+        )
+        # Each row: 3 text tokens + `patches` image tokens.
+        assert combined.shape == (2, 3 + patches, self.HIDDEN)
+
+        out = np.array(combined)
+        # Row 0: text(token 1), image patches (100.0), text(tokens 2, 3).
+        assert np.allclose(out[0, 0, :], 1.0)
+        assert np.allclose(out[0, 1 : 1 + patches, :], 100.0)
+        assert np.allclose(out[0, 1 + patches, :], 2.0)
+        assert np.allclose(out[0, 2 + patches, :], 3.0)
+        # Row 1: text(tokens 4, 5), image patches (200.0), text(token 6).
+        assert np.allclose(out[1, 0, :], 4.0)
+        assert np.allclose(out[1, 1, :], 5.0)
+        assert np.allclose(out[1, 2 : 2 + patches, :], 200.0)
+        assert np.allclose(out[1, 2 + patches, :], 6.0)
+        # The image features must NOT bleed into the wrong row.
+        assert not np.any(np.isclose(out[0], 200.0))
+        assert not np.any(np.isclose(out[1], 100.0))
+
+    def test_ragged_batch_raises(self):
+        """Rows with differing <image>-token counts cannot pack into one tensor."""
+
+        # Row 0 has two <image> tokens, row 1 has one -> ragged expanded lengths.
+        ids = mx.array(
+            [
+                [self.IMG_TOKEN, 1, self.IMG_TOKEN],
+                [2, self.IMG_TOKEN, 3],
+            ]
+        )
+        feats = mx.arange(3 * 2 * self.HIDDEN).reshape(3, 2, self.HIDDEN).astype(mx.float32)
+        with pytest.raises(ValueError, match="Ragged image batch"):
             TinyLLaVA.prepare_inputs_for_generation(self._fake_model(), ids, image_features=feats)
 
 

@@ -15,9 +15,8 @@ Key tests:
 5. Token distribution similarity
 """
 
-import pytest
-
 import mlx.core as mx
+import pytest
 
 
 @pytest.mark.slow
@@ -89,9 +88,9 @@ class TestQuantizationOutputQuality:
                     f"Reasons: {quality_4bit.metadata.get('quality_reasons', [])}"
                 )
 
-            assert comparison["acceptable"], (
+            assert comparison.acceptable, (
                 f"Quality degraded too much for prompt: {prompt}\n"
-                f"Degradations: {comparison['degradations']}"
+                f"Degradations: {comparison.degradations}"
             )
 
     @pytest.mark.integration
@@ -256,6 +255,7 @@ class TestQuantizationOutputQuality:
             analyze_repetition,
             analyze_token_distribution,
             calculate_diversity_score,
+            calculate_entropy,
         )
 
         # Test repetition analysis
@@ -277,6 +277,22 @@ class TestQuantizationOutputQuality:
         # Test diversity score (text-first API; tokens/vocab are optional extras)
         diversity = calculate_diversity_score(text, tokens=tokens, vocab_size=50000)
         assert 0 <= diversity <= 1
+
+        # Test entropy on raw token logits (operates on MLX arrays directly).
+        # A uniform distribution over V tokens has entropy ln(V) nats; a sharply
+        # peaked distribution has entropy near 0.
+        vocab_size = 32
+        uniform_logits = mx.zeros((vocab_size,))
+        uniform_entropy = calculate_entropy(uniform_logits)
+        expected_uniform = float(mx.log(mx.array(float(vocab_size))))
+        assert uniform_entropy == pytest.approx(expected_uniform, abs=1e-4)
+
+        peaked_logits = mx.array([50.0] + [0.0] * (vocab_size - 1))
+        peaked_entropy = calculate_entropy(peaked_logits)
+        assert peaked_entropy < 0.1
+
+        # Raising temperature flattens the peaked distribution, increasing entropy.
+        assert calculate_entropy(peaked_logits, temperature=100.0) > peaked_entropy
 
     @pytest.mark.integration
     def test_quantization_consistency(self, test_prompts):

@@ -192,16 +192,14 @@ def benchmark_vlm(
     clear_cache()
     reset_peak_memory()
 
-    # Benchmark with memory profiling
+    # Benchmark with memory profiling.
+    #
+    # The VLM is driven through an opaque ``generate(...) -> str`` interface that
+    # runs prefill (image + text encoding) and autoregressive decode as a single
+    # call and only returns the final text. It does not expose the prompt-
+    # processing/prefill phase separately, so we time the whole generation as one
+    # real, measured interval (prefill + decode) and report it as ``generation_time``.
     with memory_profiler() as mem:
-        # Process inputs (image + text)
-        prompt_start = time.perf_counter()
-        # Encode image and text
-        # This is model-specific and would need to be adapted
-        prompt_end = time.perf_counter()
-        prompt_time = prompt_end - prompt_start
-
-        # Generate tokens
         gen_start = time.perf_counter()
         output, generation_tokens = _generate_vlm(
             model,
@@ -213,6 +211,16 @@ def benchmark_vlm(
         )
         gen_end = time.perf_counter()
         generation_time = gen_end - gen_start
+
+    # Prompt (prefill) time is NOT separately measurable through the opaque
+    # generate() interface above, so we deliberately do not fabricate one. The
+    # previous implementation bracketed an empty block with two perf_counter()
+    # calls, yielding prompt_time ~= 0 and a meaningless prompt_tps of ~1e9 tok/s.
+    # Leaving prompt_time at 0.0 makes create_model_stats() report prompt_tps as
+    # 0.0 -- the codebase's documented "not measured" sentinel (see
+    # create_model_stats: `prompt_tps = prompt_tokens / prompt_time if prompt_time
+    # > 0 else 0.0`) -- instead of dividing the prompt-token count by a ~0 interval.
+    prompt_time = 0.0
 
     # Estimate prompt tokens (image tokens + text tokens)
     # This is approximate and model-specific

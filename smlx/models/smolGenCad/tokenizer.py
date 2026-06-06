@@ -239,7 +239,7 @@ class CADTokenizer:
 
             value = parameters[spec.name]
 
-            if spec.type == float:
+            if spec.type is float:
                 # Determine parameter type by name
                 param_name = spec.name.lower()
 
@@ -276,14 +276,14 @@ class CADTokenizer:
                 token = offset + quantized
                 tokens.append(token)
 
-            elif spec.type == int:
+            elif spec.type is int:
                 # Direct encoding for small integers (use distance offset)
                 # Clamp to valid range
                 quantized = max(0, min(255, value))
                 token = self.distance_offset + quantized
                 tokens.append(token)
 
-            elif spec.type == str:
+            elif spec.type is str:
                 # Encode string as hash (simplified)
                 # Use distance offset for string hashes
                 hash_val = hash(value) % 256
@@ -316,7 +316,7 @@ class CADTokenizer:
             return {}
 
         for spec, token in zip(param_specs, param_tokens):
-            if spec.type == float:
+            if spec.type is float:
                 # Determine parameter type by name
                 param_name = spec.name.lower()
 
@@ -354,12 +354,12 @@ class CADTokenizer:
                 value = min_val + normalized * (max_val - min_val)
                 parameters[spec.name] = float(value)
 
-            elif spec.type == int:
+            elif spec.type is int:
                 # Decode integer from distance offset
                 quantized = token - self.distance_offset
                 parameters[spec.name] = max(0, min(255, int(quantized)))
 
-            elif spec.type == str:
+            elif spec.type is str:
                 # For strings, use default values (hash decoding is lossy)
                 parameters[spec.name] = spec.default or ""
 

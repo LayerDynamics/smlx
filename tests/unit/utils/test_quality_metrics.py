@@ -14,18 +14,18 @@ Tests cover:
 - QualityMetrics dataclass
 """
 
-import pytest
 import mlx.core as mx
 import numpy as np
+import pytest
 
 from smlx.utils.quality_metrics import (
     QualityMetrics,
-    calculate_perplexity,
-    calculate_entropy,
     analyze_repetition,
     analyze_token_distribution,
-    calculate_diversity_score,
     assess_quality,
+    calculate_diversity_score,
+    calculate_entropy,
+    calculate_perplexity,
     compare_quality,
 )
 
@@ -243,26 +243,87 @@ class TestDiversityScore:
             calculate_diversity_score("")
 
 
+class _WordTokenizer:
+    """Deterministic word-level tokenizer for unit tests.
+
+    Each distinct word maps to a stable integer id (assigned by first
+    appearance), so repeated text collapses to repeated ids — exactly the
+    signal ``assess_quality`` uses for repetition/diversity. ``encode`` is pure,
+    so the two calls ``assess_quality`` makes (one direct, one inside
+    ``calculate_perplexity``) agree.
+    """
+
+    vocab_size = 256
+
+    def encode(self, text):
+        vocab = {}
+        ids = []
+        for word in text.split():
+            if word not in vocab:
+                vocab[word] = len(vocab) + 1  # ids start at 1, all < vocab_size
+            ids.append(vocab[word])
+        return ids or [1]
+
+
+class _OracleModel:
+    """Toy language model that puts almost all probability on the *actual* next
+    token, so a well-formed sequence scores a near-1 (low) perplexity. Lets the
+    unit tests exercise the real ``assess_quality`` perplexity path without
+    downloading a model.
+    """
+
+    def __init__(self, vocab_size):
+        self.vocab_size = vocab_size
+
+    def __call__(self, tokens):
+        toks = tokens[0].tolist()
+        seq_len = len(toks)
+        logits = np.full((1, seq_len, self.vocab_size), -20.0, dtype=np.float32)
+        for i in range(seq_len):
+            # Peak each position on the token that actually follows it (the last
+            # position has no successor, so peak on itself — it is never scored).
+            target = toks[i + 1] if i + 1 < seq_len else toks[i]
+            logits[0, i, target] = 20.0
+        return mx.array(logits)
+
+
 class TestQualityAssessment:
     """Test overall quality assessment."""
 
     def test_good_quality_text(self):
-        """Test quality assessment for good text."""
-        text = "Machine learning is transforming technology. Neural networks enable computers to learn from data and make intelligent decisions."
+        """Well-formed text with a confident model is rated high quality."""
+        text = (
+            "Machine learning is transforming technology. Neural networks enable "
+            "computers to learn from data and make intelligent decisions."
+        )
 
-        # Note: This requires a model and tokenizer
-        # For unit tests, we might need to mock this or make it optional
-        # Commenting out for now - should be integration test
-        # quality = assess_quality(model, tokenizer, text)
-        # assert quality.quality_score > 0.6
+        tokenizer = _WordTokenizer()
+        model = _OracleModel(tokenizer.vocab_size)
+        quality = assess_quality(model, tokenizer, text)
+
+        # The confident oracle yields a low perplexity, and diverse, non-repetitive
+        # prose clears the repetition/diversity/dominant-token gates.
+        assert quality.perplexity is not None
+        assert quality.perplexity < 100.0
+        assert quality.repetition_3gram < 0.6
+        assert quality.is_high_quality
+        assert quality.metadata["quality_reasons"] == []
 
     def test_poor_quality_text(self):
-        """Test quality assessment for poor text."""
+        """Highly repetitive text is rated low quality regardless of the model."""
         text = "asdfasdf asdfasdf asdfasdf " * 20
 
-        # Same note as above - needs model
-        # quality = assess_quality(model, tokenizer, text)
-        # assert quality.quality_score < 0.4
+        tokenizer = _WordTokenizer()
+        model = _OracleModel(tokenizer.vocab_size)
+        quality = assess_quality(model, tokenizer, text)
+
+        # One token repeated 60× drives repetition_3gram and the dominant-token
+        # ratio past their thresholds, so quality must be flagged with reasons.
+        assert not quality.is_high_quality
+        assert quality.repetition_3gram > 0.6
+        reasons = quality.metadata["quality_reasons"]
+        assert reasons, "expected explicit quality_reasons for degenerate text"
+        assert any("repetition" in r.lower() or "dominate" in r.lower() for r in reasons)
 
 
 class TestQualityComparison:
@@ -293,8 +354,10 @@ class TestQualityComparison:
 
         comparison = compare_quality(metrics1, metrics2)
 
-        # Should indicate metrics1 is better
-        assert "better" in comparison or "worse" in comparison
+        # Should indicate metrics1 (the first set) is better
+        assert comparison.first_better
+        assert not comparison.second_better
+        assert comparison.verdict == "first_better"
 
     def test_compare_identical_metrics(self):
         """Test comparing identical metrics."""
@@ -312,7 +375,70 @@ class TestQualityComparison:
         comparison = compare_quality(metrics, metrics)
 
         # Should indicate they are similar/identical
-        assert "same" in comparison or "identical" in comparison or "similar" in comparison
+        assert comparison.similar
+        assert comparison.identical
+        assert comparison.verdict == "similar"
+
+    def test_comparison_exposes_per_metric_changes(self):
+        """Regression: per-metric deltas must be real numeric fields.
+
+        ``compare_quality`` computed perplexity/repetition/diversity changes
+        internally but only ever folded them into the human-readable strings,
+        so callers reading ``perplexity_change`` / ``repetition_change`` /
+        ``diversity_change`` (e.g. the GPTQ/AWQ examples) hit a ``KeyError``.
+        They are now first-class fields on the typed result.
+        """
+        first = QualityMetrics(
+            perplexity=20.0,
+            repetition_3gram=0.02,
+            unique_token_ratio=0.80,
+            quality_score=0.8,
+        )
+        second = QualityMetrics(
+            perplexity=30.0,
+            repetition_3gram=0.10,
+            unique_token_ratio=0.50,
+            quality_score=0.5,
+        )
+
+        comparison = compare_quality(first, second)
+
+        # Perplexity: relative increase (30-20)/20 = +0.5
+        assert comparison.perplexity_change == pytest.approx(0.5)
+        # Repetition: absolute increase 0.10 - 0.02 = +0.08
+        assert comparison.repetition_change == pytest.approx(0.08)
+        # Diversity: relative drop (0.50-0.80)/0.80 = -0.375
+        assert comparison.diversity_change == pytest.approx(-0.375)
+
+    def test_comparison_changes_none_when_scores_missing(self):
+        """Per-metric changes degrade to ``None`` when a score is absent."""
+        bare = QualityMetrics(quality_score=0.5)
+
+        comparison = compare_quality(bare, bare)
+
+        assert comparison.perplexity_change is None
+        assert comparison.repetition_change is None
+        assert comparison.diversity_change is None
+
+    def test_comparison_perplexity_change_none_when_infinite(self):
+        """An infinite perplexity (the failure sentinel) is uncomparable.
+
+        ``calculate_perplexity`` returns ``math.inf`` when it cannot score the
+        text. ``inf`` is truthy, so a naive ``if a and b`` would compute
+        ``(inf - inf) / inf == nan``; the ``math.isfinite`` guard must instead
+        leave ``perplexity_change`` as ``None`` while still comparing the
+        finite metrics.
+        """
+        finite = QualityMetrics(perplexity=20.0, repetition_3gram=0.02, quality_score=0.8)
+        broken = QualityMetrics(
+            perplexity=float("inf"), repetition_3gram=0.10, quality_score=0.5
+        )
+
+        comparison = compare_quality(finite, broken)
+
+        assert comparison.perplexity_change is None
+        # The finite repetition metric is still compared.
+        assert comparison.repetition_change == pytest.approx(0.08)
 
 
 class TestPerplexityCalculation:
@@ -331,18 +457,81 @@ class TestPerplexityCalculation:
         pass
 
     def test_perplexity_from_logprobs(self):
-        """Test perplexity calculation from log probabilities."""
-        # Create synthetic logprobs
-        # Perplexity = exp(-mean(log_probs))
+        """calculate_perplexity must equal exp(-mean(target log-probs))."""
+        # Target per-token log-probs we want the model to assign to the gold tokens.
         logprobs = mx.array([-1.0, -1.5, -2.0, -1.2, -1.8])
 
-        # Calculate expected perplexity
+        # Perplexity is defined as exp of the mean negative log-likelihood.
         mean_logprob = float(mx.mean(logprobs))
-        expected_perplexity = np.exp(-mean_logprob)
+        expected_perplexity = float(np.exp(-mean_logprob))
 
-        # If calculate_perplexity accepts logprobs directly:
-        # perplexity = calculate_perplexity(logprobs=logprobs)
-        # assert abs(perplexity - expected_perplexity) < 0.01
+        lp_list = logprobs.tolist()
+
+        class _FixedLogProbTokenizer:
+            """Encodes any text to N+1 gold tokens (all id 0) → N scored positions."""
+
+            def encode(self, text):
+                return [0] * (len(lp_list) + 1)
+
+        class _FixedLogProbModel:
+            """Two-token vocab. At position i the log-prob of the gold token
+            (index 0) is exactly ``lp_list[i]``: with logit_0 = 0, choosing
+            logit_1 = log(exp(-L) - 1) gives log_softmax([0, logit_1])[0] = L.
+            """
+
+            def __call__(self, tokens):
+                seq_len = tokens.shape[1]
+                logits = np.zeros((1, seq_len, 2), dtype=np.float32)
+                for i in range(seq_len - 1):
+                    L = lp_list[i]
+                    logits[0, i, 1] = float(np.log(np.exp(-L) - 1.0))
+                return mx.array(logits)
+
+        perplexity = calculate_perplexity(
+            _FixedLogProbModel(), _FixedLogProbTokenizer(), "ignored text"
+        )
+        assert perplexity == pytest.approx(expected_perplexity, rel=1e-3)
+
+    def test_programmer_error_propagates(self):
+        """A real bug (AttributeError from a broken model) must NOT be masked as inf.
+
+        Regression for the narrowed ``except`` in ``calculate_perplexity``: the old
+        ``except Exception`` swallowed every error and returned ``float('inf')``,
+        hiding broken models/tokenizers behind a plausible-looking metric.
+        """
+
+        class _OkTokenizer:
+            def encode(self, text):
+                return [1, 2, 3, 4]
+
+        class _BuggyModel:
+            """Has a programming bug — should surface, not become infinite perplexity."""
+
+            def __call__(self, tokens):
+                raise AttributeError("'_BuggyModel' object has no attribute 'layers'")
+
+        with pytest.raises(AttributeError):
+            calculate_perplexity(_BuggyModel(), _OkTokenizer(), "hello world")
+
+    def test_expected_failure_returns_inf(self):
+        """Expected, recoverable failures still degrade gracefully to inf."""
+
+        class _OkTokenizer:
+            def encode(self, text):
+                return [1, 2, 3, 4]
+
+        # Tokenizer rejecting the input (ValueError) -> unscorable -> inf.
+        class _RejectingTokenizer:
+            def encode(self, text):
+                raise ValueError("cannot tokenize input")
+
+        # MLX-style runtime failure during the forward pass -> inf.
+        class _RuntimeFailModel:
+            def __call__(self, tokens):
+                raise RuntimeError("MLX evaluation failed")
+
+        assert calculate_perplexity(object(), _RejectingTokenizer(), "x") == float("inf")
+        assert calculate_perplexity(_RuntimeFailModel(), _OkTokenizer(), "x") == float("inf")
 
 
 class TestEdgeCases:
