@@ -34,6 +34,7 @@ import mlx.nn as nn
 from .config import SmolGenCadConfig
 from .decoder import CADDecoder
 from .encoder import TextEncoder
+from .tokenizer import CAD_VOCAB_SIZE
 
 
 class CADHead(nn.Module):
@@ -52,8 +53,8 @@ class CADHead(nn.Module):
         """
         super().__init__()
 
-        # Vocabulary size: commands + parameter bins + special tokens
-        self.vocab_size = 1100  # Must match decoder vocab size
+        # Vocabulary size: must match the tokenizer/decoder vocabulary.
+        self.vocab_size = CAD_VOCAB_SIZE
 
         # Projection layer
         self.lm_head = nn.Linear(config.decoder.hidden_size, self.vocab_size, bias=False)
@@ -86,7 +87,7 @@ class SmolGenCad(nn.Module):
         CAD Decoder (8-layer transformer): Generates CAD tokens autoregressively
           ↓ [batch, cad_len, 256]
         CAD Head: Projects to vocabulary
-          ↓ [batch, cad_len, 1100]
+          ↓ [batch, cad_len, 1104]
         Output: CAD command sequence tokens
 
     Total Parameters: ~158M
@@ -268,10 +269,11 @@ class SmolGenCad(nn.Module):
         """Get total number of parameters."""
         total = 0
         for p in self.parameters().values():
-            if hasattr(p, 'size'):
+            if hasattr(p, "size"):
                 total += p.size
-            elif hasattr(p, 'shape'):
+            elif hasattr(p, "shape"):
                 import mlx.core as mx
+
                 total += int(mx.prod(mx.array(p.shape)).item())
         return total
 
@@ -291,10 +293,6 @@ class SmolGenCad(nn.Module):
             Sanitized weights dictionary
         """
         # Remove rotary embedding inv_freq (not needed in MLX)
-        weights = {
-            k: v
-            for k, v in weights.items()
-            if "rotary_emb.inv_freq" not in k
-        }
+        weights = {k: v for k, v in weights.items() if "rotary_emb.inv_freq" not in k}
 
         return weights

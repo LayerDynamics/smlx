@@ -16,6 +16,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import DecoderConfig
+from .tokenizer import CAD_VOCAB_SIZE
 
 
 class CADDecoderAttention(nn.Module):
@@ -42,19 +43,13 @@ class CADDecoderAttention(nn.Module):
         self.is_cross_attention = is_cross_attention
 
         # For cross-attention, key/value come from encoder
-        kv_size = (
-            config.encoder_hidden_size if is_cross_attention else config.hidden_size
-        )
+        kv_size = config.encoder_hidden_size if is_cross_attention else config.hidden_size
 
         # Projections
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
-        )
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=config.attention_bias)
         self.k_proj = nn.Linear(kv_size, config.hidden_size, bias=config.attention_bias)
         self.v_proj = nn.Linear(kv_size, config.hidden_size, bias=config.attention_bias)
-        self.o_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
-        )
+        self.o_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=config.attention_bias)
 
         # RoPE for positional encoding (only for self-attention)
         if not is_cross_attention:
@@ -99,9 +94,7 @@ class CADDecoderAttention(nn.Module):
             values = self.v_proj(encoder_hidden_states)
             enc_len = encoder_hidden_states.shape[1]
             keys = keys.reshape(B, enc_len, self.num_heads, -1).transpose(0, 2, 1, 3)
-            values = values.reshape(B, enc_len, self.num_heads, -1).transpose(
-                0, 2, 1, 3
-            )
+            values = values.reshape(B, enc_len, self.num_heads, -1).transpose(0, 2, 1, 3)
         else:
             # Self-attention: K,V from decoder
             keys = self.k_proj(hidden_states)
@@ -154,9 +147,7 @@ class CADDecoderMLP(nn.Module):
         self.down_proj = nn.Linear(
             config.intermediate_size, config.hidden_size, bias=config.mlp_bias
         )
-        self.up_proj = nn.Linear(
-            config.hidden_size, config.intermediate_size, bias=config.mlp_bias
-        )
+        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=config.mlp_bias)
 
     def __call__(self, x: mx.array) -> mx.array:
         """Apply MLP with SwiGLU activation."""
@@ -190,9 +181,7 @@ class CADDecoderBlock(nn.Module):
         self.cross_attn_enabled = config.cross_attention
         if self.cross_attn_enabled:
             self.cross_attn = CADDecoderAttention(config, is_cross_attention=True)
-            self.cross_attn_norm = nn.RMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps
-            )
+            self.cross_attn_norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # MLP
         self.mlp = CADDecoderMLP(config)
@@ -277,9 +266,9 @@ class CADDecoder(nn.Module):
         super().__init__()
         self.config = config
 
-        # Embedding layer for CAD tokens
-        # Vocab size estimated: special tokens + commands + parameter bins
-        self.vocab_size = 1100  # Approximately 100 commands + 1000 param bins
+        # Embedding layer for CAD tokens. Sized to the tokenizer's vocabulary so
+        # every emittable token id (max 1103) is representable.
+        self.vocab_size = CAD_VOCAB_SIZE
         self.embed_tokens = nn.Embedding(self.vocab_size, config.hidden_size)
 
         # Transformer decoder layers

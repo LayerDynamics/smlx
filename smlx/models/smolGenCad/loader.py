@@ -18,7 +18,7 @@ import mlx.core as mx
 
 from .config import SmolGenCadConfig
 from .model import SmolGenCad
-from .tokenizer import CADTokenizer
+from .tokenizer import CAD_VOCAB_SIZE, CADTokenizer
 
 
 def load(
@@ -60,9 +60,7 @@ def load(
     try:
         from transformers import AutoTokenizer
 
-        text_tokenizer = AutoTokenizer.from_pretrained(
-            "HuggingFaceTB/SmolLM2-135M-Instruct"
-        )
+        text_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
     except Exception as e:
         print(f"Warning: Could not load text tokenizer: {e}")
         print("Note: Text tokenizer is only needed for natural language input.")
@@ -77,9 +75,7 @@ def load(
     if not lazy:
         mx.eval(model.parameters())
 
-    print(
-        f"Loaded smolGenCad model with {model.num_params_millions:.1f}M parameters"
-    )
+    print(f"Loaded smolGenCad model with {model.num_params_millions:.1f}M parameters")
     print("⚠️  Model initialized with random weights (no pre-trained weights available yet)")
     print("   For training, see docs/ModelImplementations.md")
 
@@ -128,9 +124,7 @@ def load_model_from_path(
         model.load_weights(list(weights.items()))
         print(f"Loaded weights from {weights_path}")
     else:
-        print(
-            f"Warning: No weights found at {weights_path}, using random initialization"
-        )
+        print(f"Warning: No weights found at {weights_path}, using random initialization")
 
     # Eagerly evaluate if requested
     if not lazy:
@@ -174,7 +168,7 @@ def save_model(
     if save_tokenizer:
         tokenizer_config_path = output_path / "tokenizer_config.json"
         tokenizer_config = {
-            "vocab_size": 1100,
+            "vocab_size": CAD_VOCAB_SIZE,
             "bos_token_id": 1,
             "eos_token_id": 2,
             "pad_token_id": 0,
@@ -212,7 +206,7 @@ def get_model_info(model: SmolGenCad) -> dict[str, Any]:
         "encoder_hidden_size": model.config.encoder.hidden_size,
         "decoder_hidden_size": model.config.decoder.hidden_size,
         "max_sequence_length": model.config.vocabulary.max_sequence_length,
-        "vocab_size": 1100,
+        "vocab_size": CAD_VOCAB_SIZE,
     }
 
 
