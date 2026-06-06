@@ -18,6 +18,58 @@ noted inline (e.g. GGML formats give no MLX runtime savings; datasets are LFS-tr
 absent until pulled). Kept here as an audit trail — if you touch these areas, preserve the
 fix and its test.
 
+## Outstanding Defects — found in later review (not all resolved)
+
+A second review pass (after the original 20) surfaced more issues. Tractable ones
+were fixed; the rest are documented here with file:line and what they need. Fixed
+items have regression coverage in the existing model/quant/utils test suites.
+
+### Still outstanding (need dedicated work)
+
+- [ ] **GPTQ produces a degenerate model.** `smlx/quant/gptq.py` `gptq_quantize` yields
+  a model whose output collapses to a single EOS token on SmolLM2-135M, regardless of
+  calibration size (16×128 and 128×512 both fail), and it is not lm_head tying
+  (lm_head is not quantized). Plain `quantize_model(bits=4)` on the same layers is
+  coherent, so the fault is isolated to the GPTQ **error-compensation path** corrupting
+  the Linear weights — even though Catcher/packing/inverse-Hessian/compensation match
+  the canonical mlx-lm reference. Needs dedicated numerical debugging (suspected MLX
+  cholesky/Hinv behaviour). Pinned by `tests/quant/test_output_quality.py::
+  test_gptq_no_gibberish` (marked `xfail`; it will xpass once GPTQ is fixed).
+- [ ] **TinyLLaVA: multiple image tokens unsupported.** `smlx/models/TinyLLaVA/model.py:185`
+  raises `NotImplementedError("Multiple image tokens not yet supported")`; only a single
+  `<image>` position is handled. Multi-image needs the vision path to encode N images and
+  the embedding-merge to splice features at each `<image>` position. (Related, by-design:
+  `loader.py:84` `FIXME` documents a real upstream config/weights mismatch — HF config says
+  27 vision layers, weights have 26 — and correctly uses 26.)
+- [ ] **Bench VLM/quantization suites are stubs.** `smlx/bench/suites/vlm.py:361` raises
+  `NotImplementedError`, and `tests/bench/suites/test_vlm.py` / `test_quantization.py`
+  `skip` with "Requires full VLM/model implementation". The VLM/quant benchmark paths
+  need to be implemented and the skips removed.
+
+### Fixed in the later review pass
+
+- [x] **smolGenCad vocab mismatch.** Decoder embedding / head were sized 1100 but the
+  tokenizer emits ids up to 1103 (vocab 1104) → out-of-range tokens. Unified to a single
+  `CAD_VOCAB_SIZE = 1104` constant in `tokenizer.py` (with a drift-guard assertion),
+  referenced by `decoder.py`, `model.py`, and `loader.py`.
+- [x] **smolGenCad CAD export dropped circle/rect coordinates.** `generate.py`
+  `sequence_to_python` emitted `result.circle(r)` (always at the origin), ignoring the
+  required `cx/cy`, and left `in_sketch`/`sketch_commands` dead. Now emits
+  `moveTo(cx, cy).circle(r)` / `.rect(...)`, warns on geometry outside a sketch, and
+  summarizes each closed sketch.
+- [x] **MLP dropout silently ignored.** `smlx/models/common/mlp.py` accepted a `dropout`
+  arg but did nothing (`if self.dropout > 0.0: pass`). Now uses `nn.Dropout`.
+- [x] **nanoVLM attention was fully bidirectional.** The forward drove the language-model
+  layers directly with `mask=None`, so SDPA applied no masking (text attended to future
+  tokens). `model.py` now builds a causal mask (with image↔image bidirectional blocks,
+  image positions found from `input_ids`) via the previously-dead `create_attention_mask`.
+- [x] **PyTorch `.bin` conversion implemented.** `smlx/tools/convert2mlx.py` previously
+  raised `NotImplementedError` for `.bin`; it now loads the torch state_dict (sharded ok,
+  bfloat16 upcast) and converts to MLX arrays.
+- [x] **`verify_weights` crashed on MLX arrays** (`np.all` TypeError) and **B904** in
+  `smlx/utils/loading.py` — fixed (`np.array(weight)`, `raise ... from e`).
+- [x] **`timer` rejected zero iterations** (`smlx/utils/timing.py`) — now allowed.
+
 ### CRITICAL — broken / non-functional
 
 - [x] **Invalid-UTF-8 source files crash on (re)compile.** 8 files carry a bare Latin-1

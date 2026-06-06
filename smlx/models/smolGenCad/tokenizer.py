@@ -17,6 +17,13 @@ import mlx.core as mx
 from .commands import CADCommandType, get_command_parameters, validate_parameters
 from .config import CADVocabularyConfig
 
+# Authoritative CAD vocabulary size. The decoder embedding and the generation
+# head MUST be sized to this so every token the tokenizer can emit (max id 1103)
+# is representable. Breakdown: 10 special + 70 commands + 4 * 256 parameter bins
+# (parameter offset base 80) = 1104. Import this constant instead of hardcoding
+# the number elsewhere; CADTokenizer asserts its computed size matches it.
+CAD_VOCAB_SIZE = 1104
+
 
 class CADTokenizer:
     """
@@ -76,9 +83,7 @@ class CADTokenizer:
         Total vocabulary size: ~1104 tokens (reduced from 1100+ with better organization)
         """
         # Command to token ID mapping
-        self.command_to_token = {
-            cmd: self.command_offset + cmd.value for cmd in CADCommandType
-        }
+        self.command_to_token = {cmd: self.command_offset + cmd.value for cmd in CADCommandType}
         self.token_to_command = {v: k for k, v in self.command_to_token.items()}
 
         # Parameter quantization bins (8-bit = 256 bins per parameter type)
@@ -94,6 +99,12 @@ class CADTokenizer:
         # Vocabulary size: special tokens + commands + parameter bins
         # 10 special + 70 commands + (4 * 256 parameter bins) = 10 + 70 + 1024 = 1104
         self.vocab_size = self.angle_offset + self.param_bins
+        # Guard against the scheme drifting away from the shared constant that
+        # the decoder/head are sized to.
+        assert self.vocab_size == CAD_VOCAB_SIZE, (
+            f"CAD vocab scheme drifted: computed {self.vocab_size} != "
+            f"CAD_VOCAB_SIZE={CAD_VOCAB_SIZE}"
+        )
 
     def encode(
         self,
@@ -198,9 +209,7 @@ class CADTokenizer:
 
         return sequence
 
-    def _encode_parameters(
-        self, command: CADCommandType, parameters: dict[str, Any]
-    ) -> list[int]:
+    def _encode_parameters(self, command: CADCommandType, parameters: dict[str, Any]) -> list[int]:
         """
         Encode command parameters to token IDs using 8-bit quantization.
 
@@ -235,19 +244,19 @@ class CADTokenizer:
                 param_name = spec.name.lower()
 
                 # Determine offset and range based on parameter type
-                if any(x in param_name for x in ['cx', 'x1', 'x2', 'x', 'start_x', 'end_x']):
+                if any(x in param_name for x in ["cx", "x1", "x2", "x", "start_x", "end_x"]):
                     # X coordinate
                     offset = self.x_coord_offset
                     min_val = spec.min_value or self.config.min_coordinate
                     max_val = spec.max_value or self.config.max_coordinate
 
-                elif any(y in param_name for y in ['cy', 'y1', 'y2', 'y', 'start_y', 'end_y']):
+                elif any(y in param_name for y in ["cy", "y1", "y2", "y", "start_y", "end_y"]):
                     # Y coordinate
                     offset = self.y_coord_offset
                     min_val = spec.min_value or self.config.min_coordinate
                     max_val = spec.max_value or self.config.max_coordinate
 
-                elif any(a in param_name for a in ['angle', 'rotation', 'theta']):
+                elif any(a in param_name for a in ["angle", "rotation", "theta"]):
                     # Angle (typically 0-360 degrees or 0-2π radians)
                     offset = self.angle_offset
                     min_val = spec.min_value or 0.0
@@ -312,19 +321,19 @@ class CADTokenizer:
                 param_name = spec.name.lower()
 
                 # Determine offset and range based on parameter type
-                if any(x in param_name for x in ['cx', 'x1', 'x2', 'x', 'start_x', 'end_x']):
+                if any(x in param_name for x in ["cx", "x1", "x2", "x", "start_x", "end_x"]):
                     # X coordinate
                     offset = self.x_coord_offset
                     min_val = spec.min_value or self.config.min_coordinate
                     max_val = spec.max_value or self.config.max_coordinate
 
-                elif any(y in param_name for y in ['cy', 'y1', 'y2', 'y', 'start_y', 'end_y']):
+                elif any(y in param_name for y in ["cy", "y1", "y2", "y", "start_y", "end_y"]):
                     # Y coordinate
                     offset = self.y_coord_offset
                     min_val = spec.min_value or self.config.min_coordinate
                     max_val = spec.max_value or self.config.max_coordinate
 
-                elif any(a in param_name for a in ['angle', 'rotation', 'theta']):
+                elif any(a in param_name for a in ["angle", "rotation", "theta"]):
                     # Angle
                     offset = self.angle_offset
                     min_val = spec.min_value or 0.0
@@ -386,9 +395,7 @@ class CADTokenizer:
 
         # Pad to max length
         batch_size = len(encoded)
-        token_ids = mx.full(
-            (batch_size, max_length), self.pad_token_id, dtype=mx.int32
-        )
+        token_ids = mx.full((batch_size, max_length), self.pad_token_id, dtype=mx.int32)
         attention_mask = mx.zeros((batch_size, max_length), dtype=mx.int32)
 
         for i, tokens in enumerate(encoded):

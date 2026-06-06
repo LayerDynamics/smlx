@@ -71,7 +71,7 @@ class TestCADHead:
     def test_initialization(self, model_config):
         """Test CAD head initialization."""
         head = CADHead(model_config)
-        assert head.vocab_size == 1100
+        assert head.vocab_size == 1104
         assert isinstance(head.lm_head, nn.Linear)
 
     def test_forward_pass_shape(self, cad_head):
@@ -81,7 +81,7 @@ class TestCADHead:
 
         logits = cad_head(hidden_states)
 
-        assert logits.shape == (batch_size, seq_len, 1100)
+        assert logits.shape == (batch_size, seq_len, 1104)
 
     def test_forward_pass_dtype(self, cad_head):
         """Test forward pass maintains dtype."""
@@ -93,7 +93,7 @@ class TestCADHead:
     def test_vocab_size_matches_config(self, model_config):
         """Test vocab size matches configuration."""
         head = CADHead(model_config)
-        assert head.vocab_size == 1100
+        assert head.vocab_size == 1104
 
 
 @pytest.mark.unit
@@ -161,7 +161,7 @@ class TestCADDecoder:
     def test_forward_pass_shape(self, cad_decoder):
         """Test decoder forward pass produces correct shape."""
         batch_size, seq_len = 2, 15
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, seq_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, seq_len))
 
         # Encoder hidden states (from text encoder)
         encoder_hidden_states = mx.random.normal((batch_size, 20, 576))
@@ -173,7 +173,7 @@ class TestCADDecoder:
     def test_decoder_without_encoder(self, cad_decoder):
         """Test decoder can run without encoder states (for testing)."""
         batch_size, seq_len = 1, 10
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, seq_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, seq_len))
 
         # Should work without encoder states (cross-attention will be skipped)
         decoder_output = cad_decoder(cad_input_ids, encoder_hidden_states=None)
@@ -183,7 +183,7 @@ class TestCADDecoder:
     def test_causal_masking(self, cad_decoder):
         """Test decoder uses causal masking internally."""
         batch_size, seq_len = 1, 10
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, seq_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, seq_len))
         encoder_hidden_states = mx.random.normal((batch_size, 20, 576))
 
         # Decoder creates causal mask internally
@@ -200,7 +200,7 @@ class TestCADDecoder:
         text_seq_len = 20
 
         for batch_size in batch_sizes:
-            cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_seq_len))
+            cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_seq_len))
             encoder_hidden_states = mx.random.normal((batch_size, text_seq_len, 576))
 
             decoder_output = cad_decoder(cad_input_ids, encoder_hidden_states=encoder_hidden_states)
@@ -232,7 +232,7 @@ class TestSmolGenCadModel:
     def test_decode_method(self, model):
         """Test decode method."""
         batch_size, cad_len, text_len = 2, 15, 25
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         decoder_outputs = model.decode(cad_input_ids, encoder_hidden_states)
@@ -245,16 +245,16 @@ class TestSmolGenCadModel:
         text_len, cad_len = 25, 15
 
         input_ids = mx.random.randint(0, 49152, (batch_size, text_len))
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
 
         logits = model(input_ids, cad_input_ids)
 
-        assert logits.shape == (batch_size, cad_len, 1100)
+        assert logits.shape == (batch_size, cad_len, 1104)
 
     def test_forward_pass_dtype(self, model):
         """Test forward pass maintains dtype."""
         input_ids = mx.random.randint(0, 49152, (1, 10))
-        cad_input_ids = mx.random.randint(0, 1100, (1, 5))
+        cad_input_ids = mx.random.randint(0, 1104, (1, 5))
 
         logits = model(input_ids, cad_input_ids)
 
@@ -265,7 +265,7 @@ class TestSmolGenCadModel:
         batch_size = 1
         text_len, cad_len = 20, 5
 
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         next_token, cache = model.generate_step(
@@ -282,7 +282,7 @@ class TestSmolGenCadModel:
         batch_size = 1
         text_len, cad_len = 20, 5
 
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         # Test different temperatures
@@ -299,7 +299,7 @@ class TestSmolGenCadModel:
         batch_size = 1
         text_len, cad_len = 20, 5
 
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         next_token, _ = model.generate_step(
@@ -315,7 +315,7 @@ class TestSmolGenCadModel:
         batch_size = 1
         text_len, cad_len = 20, 5
 
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         next_token, _ = model.generate_step(
@@ -331,7 +331,7 @@ class TestSmolGenCadModel:
         batch_size = 1
         text_len, cad_len = 20, 5
 
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, text_len, 576))
 
         next_token, _ = model.generate_step(
@@ -394,7 +394,7 @@ class TestModelIntegration:
     def test_decoder_head_dimension_compatibility(self, model):
         """Test decoder output dimensions match head input."""
         batch_size, cad_len = 1, 10
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
         encoder_hidden_states = mx.random.normal((batch_size, 20, 576))
 
         # Decode
@@ -413,13 +413,13 @@ class TestModelIntegration:
 
         # Random text and CAD inputs
         input_ids = mx.random.randint(0, 49152, (batch_size, text_len))
-        cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+        cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
 
         # Forward pass
         logits = model(input_ids, cad_input_ids)
 
         # Check output shape
-        assert logits.shape == (batch_size, cad_len, 1100)
+        assert logits.shape == (batch_size, cad_len, 1104)
 
         # Check logits are finite
         assert mx.all(mx.isfinite(logits)).item()
@@ -460,11 +460,11 @@ class TestModelIntegration:
 
         for batch_size in batch_sizes:
             input_ids = mx.random.randint(0, 49152, (batch_size, text_len))
-            cad_input_ids = mx.random.randint(0, 1100, (batch_size, cad_len))
+            cad_input_ids = mx.random.randint(0, 1104, (batch_size, cad_len))
 
             logits = model(input_ids, cad_input_ids)
 
-            assert logits.shape == (batch_size, cad_len, 1100)
+            assert logits.shape == (batch_size, cad_len, 1104)
 
 
 @pytest.mark.unit

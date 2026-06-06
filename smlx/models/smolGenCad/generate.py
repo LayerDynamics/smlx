@@ -241,24 +241,40 @@ def sequence_to_python(sequence: list[tuple[CADCommandType, dict[str, Any]]]) ->
     lines = ["import cadquery as cq", "", "result = cq.Workplane('XY')"]
 
     in_sketch = False
-    sketch_commands = []
+    sketch_commands: list[str] = []  # geometry drawn in the currently-open sketch
 
     for command, params in sequence:
         if command == CADCommandType.SKETCH_START:
             in_sketch = True
+            sketch_commands = []
             plane = params.get("plane", "XY")
             lines.append(f"result = result.workplane('{plane}')")
 
         elif command == CADCommandType.SKETCH_END:
+            # Document the closed sketch's contents; flag empty sketches since a
+            # following extrude would then be a no-op.
+            summary = ", ".join(sketch_commands) if sketch_commands else "no geometry"
+            lines.append(f"# sketch closed ({summary})")
             in_sketch = False
+            sketch_commands = []
 
         elif command == CADCommandType.CIRCLE:
             cx, cy, r = params.get("cx", 0), params.get("cy", 0), params.get("r", 1)
-            lines.append(f"result = result.circle({r})")
+            if not in_sketch:
+                lines.append("# warning: circle drawn outside a sketch")
+            # Place the circle at its center — a bare .circle(r) draws at the
+            # workplane origin and ignores cx/cy.
+            lines.append(f"result = result.moveTo({cx}, {cy}).circle({r})")
+            sketch_commands.append(f"circle(r={r}) @ ({cx}, {cy})")
 
         elif command == CADCommandType.RECTANGLE:
+            cx, cy = params.get("cx", 0), params.get("cy", 0)
             w, h = params.get("width", 1), params.get("height", 1)
-            lines.append(f"result = result.rect({w}, {h})")
+            if not in_sketch:
+                lines.append("# warning: rectangle drawn outside a sketch")
+            # Place the rectangle at its center (.rect is centered on the point).
+            lines.append(f"result = result.moveTo({cx}, {cy}).rect({w}, {h})")
+            sketch_commands.append(f"rect({w}x{h}) @ ({cx}, {cy})")
 
         elif command == CADCommandType.EXTRUDE:
             distance = params.get("distance", 1)

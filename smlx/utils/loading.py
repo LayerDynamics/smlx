@@ -761,7 +761,7 @@ def verify_model_integrity(
     try:
         params = dict(model.named_parameters())
     except Exception as e:
-        raise ValueError(f"Could not extract model parameters: {e}")
+        raise ValueError(f"Could not extract model parameters: {e}") from e
 
     if not params:
         raise ValueError("Model has no parameters")

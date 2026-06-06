@@ -161,19 +161,25 @@ class NanoVLM(nn.Module):
         vision_embeds = vision_embeds * vision_scale_factor
 
         # Create final embedding tensor
-        final_embedding = mx.zeros((batch_size, sequence_length, embed_dim), dtype=text_embeds.dtype)
+        final_embedding = mx.zeros(
+            (batch_size, sequence_length, embed_dim), dtype=text_embeds.dtype
+        )
 
         # Create masks to identify image tokens, text tokens
         image_token_id = self.config.image_token_id
         image_mask = input_ids == image_token_id  # Shape: (batch_size, sequence_length)
-        text_mask = input_ids != image_token_id    # Shape: (batch_size, sequence_length)
+        text_mask = input_ids != image_token_id  # Shape: (batch_size, sequence_length)
 
         # Expand masks to match embedding dimension
         text_mask_expanded = mx.expand_dims(text_mask, -1)  # (batch, seq, 1)
-        text_mask_expanded = mx.repeat(text_mask_expanded, embed_dim, axis=-1)  # (batch, seq, embed_dim)
+        text_mask_expanded = mx.repeat(
+            text_mask_expanded, embed_dim, axis=-1
+        )  # (batch, seq, embed_dim)
 
         image_mask_expanded = mx.expand_dims(image_mask, -1)  # (batch, seq, 1)
-        image_mask_expanded = mx.repeat(image_mask_expanded, embed_dim, axis=-1)  # (batch, seq, embed_dim)
+        image_mask_expanded = mx.repeat(
+            image_mask_expanded, embed_dim, axis=-1
+        )  # (batch, seq, embed_dim)
 
         # Insert text embeddings for text tokens
         final_embedding = mx.where(text_mask_expanded, text_embeds, final_embedding)
@@ -190,58 +196,61 @@ class NanoVLM(nn.Module):
             num_image_tokens = int(mx.sum(image_mask))
             logger.debug(f"Replaced {num_image_tokens} image tokens with vision embeddings")
             # Log final embedding stats (can't use boolean indexing in MLX)
-            logger.debug(f"final_vision_embeds - mean: {float(mx.mean(vision_embeds)):.4f}, "
-                        f"std: {float(mx.std(vision_embeds)):.4f}")
-            logger.debug(f"final_text_embeds - mean: {float(mx.mean(text_embeds)):.4f}, "
-                        f"std: {float(mx.std(text_embeds)):.4f}")
-            logger.debug(f"final_combined_embeds - mean: {float(mx.mean(final_embedding)):.4f}, "
-                        f"std: {float(mx.std(final_embedding)):.4f}")
+            logger.debug(
+                f"final_vision_embeds - mean: {float(mx.mean(vision_embeds)):.4f}, "
+                f"std: {float(mx.std(vision_embeds)):.4f}"
+            )
+            logger.debug(
+                f"final_text_embeds - mean: {float(mx.mean(text_embeds)):.4f}, "
+                f"std: {float(mx.std(text_embeds)):.4f}"
+            )
+            logger.debug(
+                f"final_combined_embeds - mean: {float(mx.mean(final_embedding)):.4f}, "
+                f"std: {float(mx.std(final_embedding)):.4f}"
+            )
 
         return final_embedding
 
-    def create_attention_mask(
-        self, vision_seq_len: int, text_seq_len: int
-    ) -> mx.array:
+    def create_attention_mask(self, input_ids: mx.array, has_image: bool = True) -> mx.array:
         """
-        Create attention mask for vision+text sequence.
+        Create the multimodal attention mask for a vision+text sequence.
 
-        Vision tokens use bidirectional attention (can attend to all vision tokens).
-        Text tokens use causal attention (can only attend to previous text tokens).
-        Both can attend to all vision tokens (vision acts as a prefix).
+        Text tokens use causal attention (attend only to earlier positions). Image
+        tokens additionally attend to every other image token bidirectionally,
+        since image patches have no left-to-right ordering. Image-token positions
+        are located from ``input_ids`` (image_token_id), so they may appear
+        anywhere in the sequence (e.g. text + image + text) — they are NOT assumed
+        to be a contiguous prefix.
 
         Args:
-            vision_seq_len: Number of vision tokens
-            text_seq_len: Number of text tokens
+            input_ids: Token IDs [batch, seq_len]; image_token_id marks image patches.
+            has_image: Whether image tokens are present. When False, a plain causal
+                mask is returned.
 
         Returns:
-            Attention mask [1, 1, total_len, total_len]
-            Values: -inf for masked positions, 0.0 for allowed positions
+            Additive attention mask [batch, 1, seq_len, seq_len] with 0.0 where a
+            query may attend and -inf where it may not.
         """
-        total_len = vision_seq_len + text_seq_len
+        batch_size, seq_len = input_ids.shape
 
-        # Start with all positions masked (-inf)
-        # Use float32 dtype for numerical stability
-        mask = mx.full((total_len, total_len), -float("inf"), dtype=mx.float32)
+        # Causal base: query position i may attend key position j iff j <= i.
+        idx = mx.arange(seq_len)
+        attend = idx[:, None] >= idx[None, :]  # (seq_len, seq_len) bool
+        attend = mx.broadcast_to(attend[None], (batch_size, seq_len, seq_len))
 
-        # Vision tokens can attend to ALL vision tokens (bidirectional)
-        for i in range(vision_seq_len):
-            for j in range(vision_seq_len):
-                mask[i, j] = 0.0
+        if has_image:
+            # Allow image<->image bidirectional attention within each sequence.
+            is_image = input_ids == self.config.image_token_id  # (batch, seq_len)
+            image_pair = is_image[:, :, None] & is_image[:, None, :]
+            attend = attend | image_pair
 
-        # Text tokens can attend to ALL vision tokens (vision is a prefix)
-        for i in range(text_seq_len):
-            for j in range(vision_seq_len):
-                mask[vision_seq_len + i, j] = 0.0
-
-        # Text tokens use causal attention (can only attend to previous text tokens)
-        for i in range(text_seq_len):
-            for j in range(i + 1):
-                mask[vision_seq_len + i, vision_seq_len + j] = 0.0
-
-        # Add batch and head dimensions: [total_len, total_len] -> [1, 1, total_len, total_len]
-        mask = mask.reshape(1, 1, total_len, total_len)
-
-        return mask
+        # Convert the boolean "may attend" matrix into an additive mask.
+        additive = mx.where(
+            attend,
+            mx.array(0.0, dtype=mx.float32),
+            mx.array(-float("inf"), dtype=mx.float32),
+        )
+        return additive[:, None, :, :]  # (batch, 1, seq_len, seq_len)
 
     def __call__(
         self,
@@ -294,13 +303,20 @@ class NanoVLM(nn.Module):
             inputs_embeds = self._prepare_inputs_for_multimodal(
                 vision_embeds, text_embeds, input_ids
             )
-
-            # TODO: Create proper causal attention mask
-            # For now, let SmolLM2 create default causal mask
-            # Future: implement custom mask for vision tokens (bidirectional) + text tokens (causal)
         else:
             # Text-only mode
             inputs_embeds = text_embeds
+
+        # Build the attention mask if the caller did not supply one. This forward
+        # drives the language-model layers directly, bypassing the backbone's own
+        # causal-mask creation — so without this the attention would be fully
+        # bidirectional (a correctness bug: text tokens would attend to future
+        # tokens). Text is masked causally; image-patch tokens additionally
+        # attend to each other bidirectionally (patches have no left-to-right
+        # order). Generation re-runs the full sequence each step (no KV cache),
+        # so a full (N, N) mask is always appropriate here.
+        if mask is None and inputs_embeds.shape[1] > 1:
+            mask = self.create_attention_mask(input_ids, has_image=pixel_values is not None)
 
         # Pass through language model
         # Note: We need to call the model's forward pass directly with embeddings
@@ -367,7 +383,11 @@ class NanoVLM(nn.Module):
                 continue  # Skip - computed dynamically
 
             # 3. Standalone position embeddings (not under patch_embedding)
-            if (k.startswith("vision.") or k.startswith("vision_encoder.") or k.startswith("vision_model.")):
+            if (
+                k.startswith("vision.")
+                or k.startswith("vision_encoder.")
+                or k.startswith("vision_model.")
+            ):
                 if ("position_embedding" in k or "pos_emb" in k) and "patch_embedding" not in k:
                     continue  # Skip - will be randomly initialized
 
@@ -386,14 +406,20 @@ class NanoVLM(nn.Module):
                 # Handle position embedding first (needs to move up one level)
                 if "patch_embedding.position_embedding" in new_key:
                     # Move position_embedding up to embeddings level and add .weight suffix
-                    new_key = new_key.replace("patch_embedding.position_embedding", "embeddings.position_embedding.weight")
+                    new_key = new_key.replace(
+                        "patch_embedding.position_embedding", "embeddings.position_embedding.weight"
+                    )
                 # Handle patch_embedding.conv (remove .conv layer)
                 elif ".patch_embedding.conv." in new_key:
-                    new_key = new_key.replace(".patch_embedding.conv.", ".embeddings.patch_embedding.")
+                    new_key = new_key.replace(
+                        ".patch_embedding.conv.", ".embeddings.patch_embedding."
+                    )
                 # Handle generic patch_embedding
                 elif ".patch_emb." in new_key:
                     new_key = new_key.replace(".patch_emb.", ".embeddings.patch_embedding.")
-                elif ".patch_embedding." in new_key and ".embeddings.patch_embedding." not in new_key:
+                elif (
+                    ".patch_embedding." in new_key and ".embeddings.patch_embedding." not in new_key
+                ):
                     new_key = new_key.replace(".patch_embedding.", ".embeddings.patch_embedding.")
 
                 # Map transformer blocks (handle both blocks.* and layers.*)
@@ -443,7 +469,9 @@ class NanoVLM(nn.Module):
                 else:
                     # decoder.blocks.* -> language_model.model.layers.*
                     new_key = new_key.replace("decoder.", "language_model.model.")
-                    new_key = new_key.replace("language_model.model.blocks.", "language_model.model.layers.")
+                    new_key = new_key.replace(
+                        "language_model.model.blocks.", "language_model.model.layers."
+                    )
 
                     # Map attention layer naming
                     # decoder uses: .attn.* but SmolLM2 uses .self_attn.*

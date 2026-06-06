@@ -1133,17 +1133,28 @@ def convert(
                 # Single array returned - use filename as key
                 weights[sf_file.stem] = loaded
     else:
-        # Try PyTorch .bin files
-        bin_files = list(model_path.glob("*.bin"))
+        # Try PyTorch .bin files (a torch state_dict, possibly sharded).
+        bin_files = sorted(model_path.glob("*.bin"))
         if bin_files:
-            logger.warning(
-                "PyTorch .bin files found. Direct PyTorch conversion requires torch. "
-                "Please convert to safetensors first or ensure model uses safetensors."
-            )
-            raise NotImplementedError(
-                "Direct PyTorch .bin conversion not yet implemented. "
-                "Please use a model with safetensors format."
-            )
+            try:
+                import torch
+            except ImportError as e:
+                raise ImportError(
+                    "PyTorch .bin weights require the 'torch' package to convert. "
+                    "Install torch (pip install torch) or provide the model in "
+                    "safetensors format."
+                ) from e
+
+            logger.info(f"Loading {len(bin_files)} PyTorch .bin file(s)...")
+            for bin_file in bin_files:
+                logger.info(f"Loading {bin_file.name}...")
+                state_dict = torch.load(str(bin_file), map_location="cpu", weights_only=True)
+                for key, tensor in state_dict.items():
+                    # bfloat16 has no NumPy dtype; upcast to float32 before
+                    # handing the buffer to MLX.
+                    if tensor.dtype == torch.bfloat16:
+                        tensor = tensor.to(torch.float32)
+                    weights[key] = mx.array(tensor.detach().cpu().numpy())
         else:
             raise ValueError(f"No model weights found in {model_path}")
 

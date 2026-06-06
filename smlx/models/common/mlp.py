@@ -164,7 +164,9 @@ class StandardMLP(nn.Module):
         else:
             raise ValueError(f"Unsupported activation: {activation}")
 
-        self.dropout = dropout
+        # nn.Dropout applies only in training mode (a no-op during eval and at
+        # p=0.0), so it is always safe to call in the forward pass.
+        self.dropout = nn.Dropout(p=dropout)
 
     def __call__(self, x: mx.array) -> mx.array:
         """
@@ -177,13 +179,7 @@ class StandardMLP(nn.Module):
             Output tensor [batch, seq_len, hidden_size]
         """
         h = self.activation(self.up_proj(x))
-
-        # Apply dropout if specified (though MLX doesn't have built-in dropout yet)
-        # This is a placeholder for when MLX adds dropout support
-        if self.dropout > 0.0:
-            # TODO: Implement dropout when MLX supports it
-            pass
-
+        h = self.dropout(h)
         return self.down_proj(h)
 
 
