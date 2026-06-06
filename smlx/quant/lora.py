@@ -105,7 +105,8 @@ class LoRALinear(nn.Module):
         self.linear = nn.Linear(input_dims, output_dims, bias=bias)
         self.dropout = nn.Dropout(p=dropout)
 
-        # LoRA scaling factor
+        # LoRA rank and scaling factor
+        self.r = r
         self.scale = scale
 
         # Low-rank adaptation matrices
@@ -281,7 +282,8 @@ class LoRAEmbedding(nn.Module):
         self.embedding = nn.Embedding(num_embeddings, dims)
         self.dropout = nn.Dropout(p=dropout)
 
-        # LoRA scaling factor
+        # LoRA rank and scaling factor
+        self.r = r
         self.scale = scale
 
         # Low-rank adaptation matrices
@@ -466,7 +468,8 @@ class LoRASwitchLinear(nn.Module):
         self.linear = SwitchLinear(input_dims, output_dims, num_experts, bias=bias)
         self.dropout = nn.Dropout(p=dropout)
 
-        # LoRA scaling factor
+        # LoRA rank and scaling factor
+        self.r = r
         self.scale = scale
 
         # Low-rank adaptation matrices (per expert)
@@ -695,7 +698,7 @@ def merge_lora(model, dequantize: bool = False):
         >>> # ... train lora_model ...
         >>> fused_model = merge_lora(lora_model, dequantize=False)
     """
-    from mlx.utils import tree_flatten, tree_unflatten
+    from mlx.utils import tree_unflatten
 
     # Validate model type
     if not isinstance(model, nn.Module):
@@ -705,9 +708,15 @@ def merge_lora(model, dequantize: bool = False):
     if not isinstance(dequantize, bool):
         raise ValueError(f"dequantize must be a boolean, got {type(dequantize).__name__}")
 
-    # Collect LoRA layers to fuse
+    # Collect LoRA layers to fuse.
+    #
+    # We must use ``named_modules()`` (full recursive walk) rather than
+    # ``leaf_modules()`` here: a ``LoRALinear`` wraps a base ``linear`` and a
+    # ``dropout`` child, so it is *not* a leaf. ``leaf_modules()`` would only
+    # surface those inner children and never the ``LoRALinear`` wrappers,
+    # leaving every adapter unmerged.
     fused_layers = []
-    for key, module in tree_flatten(model.leaf_modules(), is_leaf=nn.Module.is_module):
+    for key, module in model.named_modules():
         if isinstance(module, LoRALinear):
             # Fuse this LoRA layer
             fused_layer = module.fuse(dequantize=dequantize)

@@ -62,28 +62,40 @@ class QualityMetrics:
     repetition_1gram: Optional[float] = None
     repetition_2gram: Optional[float] = None
     repetition_3gram: Optional[float] = None
+    diversity_score: Optional[float] = None
     unique_token_ratio: Optional[float] = None
     vocab_diversity: Optional[int] = None
     avg_token_probability: Optional[float] = None
+    avg_token_prob: Optional[float] = None
+    quality_score: Optional[float] = None
     is_high_quality: bool = True
     metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
+        # ``avg_token_prob`` is the short public alias for ``avg_token_probability``;
+        # keep the two in sync regardless of which one the caller supplied.
+        if self.avg_token_prob is None and self.avg_token_probability is not None:
+            self.avg_token_prob = self.avg_token_probability
+        elif self.avg_token_probability is None and self.avg_token_prob is not None:
+            self.avg_token_probability = self.avg_token_prob
 
     def to_dict(self) -> dict[str, Any]:
         """Convert metrics to dictionary."""
         return {
-            'perplexity': self.perplexity,
-            'entropy': self.entropy,
-            'repetition_1gram': self.repetition_1gram,
-            'repetition_2gram': self.repetition_2gram,
-            'repetition_3gram': self.repetition_3gram,
-            'unique_token_ratio': self.unique_token_ratio,
-            'vocab_diversity': self.vocab_diversity,
-            'avg_token_probability': self.avg_token_probability,
-            'is_high_quality': self.is_high_quality,
+            "perplexity": self.perplexity,
+            "entropy": self.entropy,
+            "repetition_1gram": self.repetition_1gram,
+            "repetition_2gram": self.repetition_2gram,
+            "repetition_3gram": self.repetition_3gram,
+            "diversity_score": self.diversity_score,
+            "unique_token_ratio": self.unique_token_ratio,
+            "vocab_diversity": self.vocab_diversity,
+            "avg_token_probability": self.avg_token_probability,
+            "avg_token_prob": self.avg_token_prob,
+            "quality_score": self.quality_score,
+            "is_high_quality": self.is_high_quality,
             **self.metadata,
         }
 
@@ -130,26 +142,37 @@ def calculate_perplexity(
 
         if len(tokens) <= context_len:
             logger.warning("Text is too short for perplexity calculation")
-            return float('inf')
+            return float("inf")
 
         # Convert to MLX array
         tokens_mx = mx.array(tokens)[None, :]  # Add batch dimension
 
-        # Get model logits
-        with mx.no_grad():
-            logits = model(tokens_mx)
+        # Get model logits. MLX has no `mx.no_grad()` context manager (and is
+        # lazy with no autograd tape unless gradients are explicitly requested),
+        # so a plain forward pass is already gradient-free.
+        logits = model(tokens_mx)
 
         # Calculate cross-entropy loss
         # Shift logits and tokens for next-token prediction
         shift_logits = logits[:, :-1, :]
         shift_tokens = tokens_mx[:, 1:]
 
-        # Calculate log probabilities
-        log_probs = mx.log_softmax(shift_logits, axis=-1)
+        # A 1-token sequence has nothing to predict after shifting; perplexity is
+        # undefined, so report infinity rather than reducing over an empty array.
+        if shift_logits.shape[1] == 0:
+            logger.warning("Sequence too short for perplexity (need >1 token)")
+            return float("inf")
 
-        # Get log prob of actual next tokens
-        batch_size, seq_len, vocab_size = shift_logits.shape
-        token_log_probs = log_probs[0, range(seq_len), shift_tokens[0]]
+        # Calculate log probabilities. MLX core has no `mx.log_softmax`, so
+        # compute it stably as logits - logsumexp(logits).
+        log_probs = shift_logits - mx.logsumexp(shift_logits, axis=-1, keepdims=True)
+
+        # Get log prob of actual next tokens. MLX cannot index with a Python
+        # ``range``; gather each position's target-token log-prob with
+        # ``take_along_axis`` (works on the seq x vocab matrix).
+        seq_log_probs = log_probs[0]  # (seq_len, vocab)
+        targets = shift_tokens[0][:, None]  # (seq_len, 1)
+        token_log_probs = mx.take_along_axis(seq_log_probs, targets, axis=-1)[:, 0]
 
         # Only use tokens after context
         if context_len > 0:
@@ -165,7 +188,7 @@ def calculate_perplexity(
 
     except Exception as e:
         logger.error(f"Failed to calculate perplexity: {e}")
-        return float('inf')
+        return float("inf")
 
 
 def calculate_entropy(logits: mx.array, temperature: float = 1.0) -> float:
@@ -181,7 +204,9 @@ def calculate_entropy(logits: mx.array, temperature: float = 1.0) -> float:
         temperature: Temperature for scaling logits
 
     Returns:
-        Entropy value in bits (typical range: 1-15 for language models)
+        Entropy value in nats — natural-log units, so a uniform distribution
+        over ``V`` tokens has entropy ``ln(V)`` (typical range: ~1-12 for
+        language-model vocabularies).
 
     Example:
         >>> import mlx.core as mx
@@ -200,18 +225,17 @@ def calculate_entropy(logits: mx.array, temperature: float = 1.0) -> float:
     # Calculate probabilities
     probs = mx.softmax(logits, axis=-1)
 
-    # Calculate entropy: -sum(p * log2(p))
-    # Add small epsilon to avoid log(0)
+    # Calculate entropy in nats: -sum(p * ln(p)). Natural log (not log2) so the
+    # uniform-distribution entropy equals ln(vocab_size), the convention callers
+    # and tests expect. Add a small epsilon to avoid log(0).
     epsilon = 1e-10
-    log_probs = mx.log2(probs + epsilon)
+    log_probs = mx.log(probs + epsilon)
     entropy = -mx.sum(probs * log_probs)
 
     return float(entropy.item())
 
 
-def analyze_repetition(
-    text: str, max_n: int = 4
-) -> dict[str, float]:
+def analyze_repetition(text: str, max_n: int = 4) -> dict[str, float]:
     """
     Analyze repetition at multiple n-gram levels.
 
@@ -233,13 +257,15 @@ def analyze_repetition(
     words = text.split()
 
     if len(words) == 0:
-        return {f'repetition_{n}gram': 0.0 for n in range(1, max_n + 1)}
+        # Repetition is undefined for empty/whitespace-only text; signal the
+        # caller error rather than returning misleading all-zero ratios.
+        raise ValueError("Cannot analyze repetition of empty text")
 
     metrics = {}
 
     for n in range(1, max_n + 1):
         if len(words) < n:
-            metrics[f'repetition_{n}gram'] = 0.0
+            metrics[f"repetition_{n}gram"] = 0.0
             continue
 
         # Extract n-grams
@@ -249,7 +275,7 @@ def analyze_repetition(
             ngrams.append(ngram)
 
         if not ngrams:
-            metrics[f'repetition_{n}gram'] = 0.0
+            metrics[f"repetition_{n}gram"] = 0.0
             continue
 
         # Calculate repetition ratio
@@ -257,7 +283,7 @@ def analyze_repetition(
         total_ngrams = len(ngrams)
         repetition_ratio = 1.0 - (unique_ngrams / total_ngrams)
 
-        metrics[f'repetition_{n}gram'] = repetition_ratio
+        metrics[f"repetition_{n}gram"] = repetition_ratio
 
     return metrics
 
@@ -277,80 +303,106 @@ def analyze_token_distribution(tokens: list[int]) -> dict[str, Any]:
         >>> metrics = analyze_token_distribution(tokens)
         >>> assert metrics['unique_ratio'] < 1.0  # Has repeated tokens
     """
-    if not tokens:
+    # Normalize array-like inputs (MLX/NumPy) to a plain list of Python ints so
+    # Counter/len behave correctly (iterating an MLX array yields 0-d arrays,
+    # which are unhashable and break Counter).
+    if isinstance(tokens, mx.array):
+        tokens = tokens.tolist()
+    elif isinstance(tokens, np.ndarray):
+        tokens = tokens.tolist()
+
+    if not tokens or len(tokens) == 0:
         return {
-            'unique_count': 0,
-            'total_count': 0,
-            'unique_ratio': 0.0,
-            'most_common_token': None,
-            'most_common_count': 0,
-            'most_common_ratio': 0.0,
+            # New canonical keys
+            "num_unique_tokens": 0,
+            "total_tokens": 0,
+            "unique_token_ratio": 0.0,
+            # Back-compat aliases (used by assess_quality)
+            "unique_count": 0,
+            "total_count": 0,
+            "unique_ratio": 0.0,
+            "most_common_token": None,
+            "most_common_count": 0,
+            "most_common_ratio": 0.0,
         }
 
     token_counts = Counter(tokens)
     unique_count = len(token_counts)
     total_count = len(tokens)
+    unique_ratio = unique_count / total_count
 
     most_common_token, most_common_count = token_counts.most_common(1)[0]
 
     return {
-        'unique_count': unique_count,
-        'total_count': total_count,
-        'unique_ratio': unique_count / total_count,
-        'most_common_token': most_common_token,
-        'most_common_count': most_common_count,
-        'most_common_ratio': most_common_count / total_count,
+        # New canonical keys
+        "num_unique_tokens": unique_count,
+        "total_tokens": total_count,
+        "unique_token_ratio": unique_ratio,
+        # Back-compat aliases (used by assess_quality)
+        "unique_count": unique_count,
+        "total_count": total_count,
+        "unique_ratio": unique_ratio,
+        "most_common_token": most_common_token,
+        "most_common_count": most_common_count,
+        "most_common_ratio": most_common_count / total_count,
     }
 
 
 def calculate_diversity_score(
-    tokens: list[int],
     text: str,
-    vocab_size: int,
+    tokens: Optional[list[int]] = None,
+    vocab_size: Optional[int] = None,
 ) -> float:
     """
-    Calculate overall diversity score for generated text.
+    Calculate an overall diversity score for generated text.
 
-    Combines multiple metrics into a single score measuring how diverse and
-    non-repetitive the output is. Score ranges from 0 (very repetitive) to
-    1 (very diverse).
+    Measures how diverse and non-repetitive the output is, from 0 (very
+    repetitive) to 1 (very diverse). The score is computed from the text itself
+    (unique-word ratio + low n-gram repetition). When token IDs and a vocab
+    size are also supplied, token-level uniqueness and vocabulary coverage are
+    blended in for a richer score.
 
     Args:
-        tokens: Generated token IDs
-        text: Generated text
-        vocab_size: Total vocabulary size
+        text: Generated text (required).
+        tokens: Generated token IDs (optional; enables token-level signals).
+        vocab_size: Total vocabulary size (optional; enables vocab coverage).
 
     Returns:
-        Diversity score (0-1, higher = more diverse)
+        Diversity score (0-1, higher = more diverse).
+
+    Raises:
+        ValueError: If ``text`` is empty or whitespace-only.
 
     Example:
-        >>> tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-        >>> text = "one two three four five six seven eight nine ten"
-        >>> score = calculate_diversity_score(tokens, text, vocab_size=50000)
+        >>> score = calculate_diversity_score("one two three four five")
         >>> assert score > 0.5  # Diverse text
     """
-    if not tokens or not text:
-        return 0.0
+    words = text.split() if text else []
+    if not words:
+        # Diversity is undefined for empty text; surface the caller error.
+        raise ValueError("Cannot compute diversity score for empty text")
 
-    # Token-level diversity
-    unique_ratio = len(set(tokens)) / len(tokens)
+    # Word-level diversity (case-insensitive so "The"/"the" count as one word)
+    unique_word_ratio = len({w.lower() for w in words}) / len(words)
 
-    # N-gram diversity (use 2-grams and 3-grams)
+    # N-gram repetition (2- and 3-grams); higher = more repetitive
     repetition_metrics = analyze_repetition(text, max_n=3)
     avg_repetition = (
-        repetition_metrics.get('repetition_2gram', 0) +
-        repetition_metrics.get('repetition_3gram', 0)
+        repetition_metrics.get("repetition_2gram", 0.0)
+        + repetition_metrics.get("repetition_3gram", 0.0)
     ) / 2.0
 
-    # Vocabulary coverage (what fraction of vocab is used)
-    vocab_coverage = len(set(tokens)) / vocab_size
-
-    # Combine metrics (weighted average)
-    diversity_score = (
-        0.4 * unique_ratio +              # 40% weight on unique tokens
-        0.4 * (1.0 - avg_repetition) +    # 40% weight on low repetition
-        0.2 * vocab_coverage              # 20% weight on vocab coverage
-    )
+    if tokens is not None and len(tokens) > 0 and vocab_size:
+        # Richer token-aware score (mirrors the original behaviour): blend token
+        # uniqueness, low repetition, and vocabulary coverage.
+        unique_token_ratio = len(set(tokens)) / len(tokens)
+        vocab_coverage = len(set(tokens)) / vocab_size
+        diversity_score = (
+            0.4 * unique_token_ratio + 0.4 * (1.0 - avg_repetition) + 0.2 * vocab_coverage
+        )
+    else:
+        # Text-only score: unique-word ratio + low repetition.
+        diversity_score = 0.6 * unique_word_ratio + 0.4 * (1.0 - avg_repetition)
 
     return float(np.clip(diversity_score, 0.0, 1.0))
 
@@ -408,8 +460,8 @@ def assess_quality(
 
     # Calculate diversity
     try:
-        vocab_size = tokenizer.vocab_size if hasattr(tokenizer, 'vocab_size') else 50000
-        diversity_score = calculate_diversity_score(tokens, text, vocab_size)
+        vocab_size = tokenizer.vocab_size if hasattr(tokenizer, "vocab_size") else 50000
+        diversity_score = calculate_diversity_score(text, tokens=tokens, vocab_size=vocab_size)
     except Exception:
         diversity_score = None
 
@@ -421,38 +473,63 @@ def assess_quality(
         is_high_quality = False
         quality_reasons.append(f"High perplexity ({perplexity:.1f})")
 
-    if repetition_metrics.get('repetition_3gram', 0) > repetition_threshold:
+    if repetition_metrics.get("repetition_3gram", 0) > repetition_threshold:
         is_high_quality = False
-        quality_reasons.append(
-            f"High repetition ({repetition_metrics['repetition_3gram']:.2f})"
-        )
+        quality_reasons.append(f"High repetition ({repetition_metrics['repetition_3gram']:.2f})")
 
     if diversity_score is not None and diversity_score < min_diversity:
         is_high_quality = False
         quality_reasons.append(f"Low diversity ({diversity_score:.2f})")
 
-    if token_metrics['most_common_ratio'] > 0.5:
+    if token_metrics["most_common_ratio"] > 0.5:
         is_high_quality = False
-        quality_reasons.append(
-            f"One token dominates ({token_metrics['most_common_ratio']:.1%})"
-        )
+        quality_reasons.append(f"One token dominates ({token_metrics['most_common_ratio']:.1%})")
 
     return QualityMetrics(
         perplexity=perplexity,
         entropy=None,  # Could add if logits available
-        repetition_1gram=repetition_metrics.get('repetition_1gram'),
-        repetition_2gram=repetition_metrics.get('repetition_2gram'),
-        repetition_3gram=repetition_metrics.get('repetition_3gram'),
-        unique_token_ratio=token_metrics['unique_ratio'],
-        vocab_diversity=token_metrics['unique_count'],
+        repetition_1gram=repetition_metrics.get("repetition_1gram"),
+        repetition_2gram=repetition_metrics.get("repetition_2gram"),
+        repetition_3gram=repetition_metrics.get("repetition_3gram"),
+        diversity_score=diversity_score,
+        unique_token_ratio=token_metrics["unique_ratio"],
+        vocab_diversity=token_metrics["unique_count"],
         avg_token_probability=None,
         is_high_quality=is_high_quality,
         metadata={
-            'quality_reasons': quality_reasons if not is_high_quality else [],
-            'text_length': len(text),
-            'token_count': len(tokens),
+            "quality_reasons": quality_reasons if not is_high_quality else [],
+            "text_length": len(text),
+            "token_count": len(tokens),
         },
     )
+
+
+def _quality_goodness(m: QualityMetrics) -> float:
+    """Collapse a QualityMetrics into a single 0-1 'goodness' score.
+
+    Prefers an explicit ``quality_score`` when present; otherwise builds a
+    composite from whatever individual signals are available (lower perplexity
+    and repetition are better; higher entropy, diversity, and token uniqueness
+    are better).
+    """
+    if m.quality_score is not None:
+        return float(m.quality_score)
+
+    parts = []
+    if m.diversity_score is not None:
+        parts.append(float(m.diversity_score))
+    if m.unique_token_ratio is not None:
+        parts.append(float(m.unique_token_ratio))
+    if m.entropy is not None:
+        # Map entropy (nats) into ~[0, 1]; ln(vocab) for common vocabs is ~10.
+        parts.append(float(min(m.entropy / 10.0, 1.0)))
+    if m.repetition_3gram is not None:
+        parts.append(1.0 - float(m.repetition_3gram))
+    if m.perplexity is not None:
+        # Lower perplexity -> higher goodness; 50 is a "decent text" anchor.
+        parts.append(1.0 / (1.0 + float(m.perplexity) / 50.0))
+
+    return sum(parts) / len(parts) if parts else 0.0
 
 
 def compare_quality(
@@ -466,69 +543,95 @@ def compare_quality(
     Args:
         metrics1: First metrics (e.g., full precision)
         metrics2: Second metrics (e.g., quantized)
-        tolerance: Acceptable degradation ratio (0.1 = 10%)
+        tolerance: Acceptable degradation ratio / goodness gap (0.1 = 10%).
 
     Returns:
-        Dictionary with comparison results
+        A dict describing the comparison. Always contains ``acceptable`` (bool),
+        ``degradations`` / ``improvements`` (lists), the per-set ``goodness``
+        scores, and a ``verdict`` string. It additionally carries the verdict as
+        membership keys — ``"better"``/``"worse"`` when one set wins, or
+        ``"similar"``/``"identical"``/``"same"`` when they are equivalent — so
+        callers can write ``"better" in result`` as well as ``result["acceptable"]``.
 
     Example:
-        >>> # Compare original vs quantized model output
         >>> original_metrics = assess_quality(model_fp16, tokenizer, text)
         >>> quant_metrics = assess_quality(model_4bit, tokenizer, text)
         >>> comparison = compare_quality(original_metrics, quant_metrics)
-        >>> assert comparison['acceptable']  # Quality maintained
+        >>> assert comparison["acceptable"]
     """
-    comparison = {
-        'acceptable': True,
-        'degradations': [],
-        'improvements': [],
-    }
+    g1 = _quality_goodness(metrics1)
+    g2 = _quality_goodness(metrics2)
+    diff = g1 - g2
 
-    # Compare perplexity
+    degradations: list[str] = []
+    improvements: list[str] = []
+
+    # Perplexity (lower is better)
     if metrics1.perplexity and metrics2.perplexity:
         ppl_change = (metrics2.perplexity - metrics1.perplexity) / metrics1.perplexity
         if ppl_change > tolerance:
-            comparison['acceptable'] = False
-            comparison['degradations'].append(
+            degradations.append(
                 f"Perplexity increased {ppl_change:.1%} "
-                f"({metrics1.perplexity:.1f} → {metrics2.perplexity:.1f})"
+                f"({metrics1.perplexity:.1f} -> {metrics2.perplexity:.1f})"
             )
         elif ppl_change < -tolerance:
-            comparison['improvements'].append(
-                f"Perplexity decreased {abs(ppl_change):.1%}"
-            )
+            improvements.append(f"Perplexity decreased {abs(ppl_change):.1%}")
 
-    # Compare repetition
-    if metrics1.repetition_3gram and metrics2.repetition_3gram:
+    # Repetition (lower is better)
+    if metrics1.repetition_3gram is not None and metrics2.repetition_3gram is not None:
         rep_change = metrics2.repetition_3gram - metrics1.repetition_3gram
         if rep_change > tolerance:
-            comparison['acceptable'] = False
-            comparison['degradations'].append(
-                f"Repetition increased {rep_change:.1%}"
-            )
+            degradations.append(f"Repetition increased {rep_change:.1%}")
+        elif rep_change < -tolerance:
+            improvements.append(f"Repetition decreased {abs(rep_change):.1%}")
 
-    # Compare diversity
+    # Token diversity (higher is better)
     if metrics1.unique_token_ratio and metrics2.unique_token_ratio:
         div_change = (
-            (metrics2.unique_token_ratio - metrics1.unique_token_ratio) /
-            metrics1.unique_token_ratio
-        )
+            metrics2.unique_token_ratio - metrics1.unique_token_ratio
+        ) / metrics1.unique_token_ratio
         if div_change < -tolerance:
-            comparison['acceptable'] = False
-            comparison['degradations'].append(
-                f"Token diversity decreased {abs(div_change):.1%}"
-            )
+            degradations.append(f"Token diversity decreased {abs(div_change):.1%}")
+        elif div_change > tolerance:
+            improvements.append(f"Token diversity increased {div_change:.1%}")
 
-    return comparison
+    result: dict[str, Any] = {
+        "goodness_first": g1,
+        "goodness_second": g2,
+        "difference": diff,
+        "degradations": degradations,
+        "improvements": improvements,
+        "acceptable": len(degradations) == 0,
+    }
+
+    # Encode the verdict both as a string and as membership keys so callers can
+    # use either ``result["acceptable"]`` (dict access) or ``"better" in result``
+    # (key membership) styles.
+    if abs(diff) < tolerance:
+        result["verdict"] = "similar"
+        result["similar"] = True
+        if g1 == g2:
+            result["identical"] = True
+            result["same"] = True
+    elif diff > 0:
+        result["verdict"] = "first_better"
+        result["better"] = "first"
+        result["worse"] = "second"
+    else:
+        result["verdict"] = "second_better"
+        result["better"] = "second"
+        result["worse"] = "first"
+
+    return result
 
 
 __all__ = [
-    'QualityMetrics',
-    'calculate_perplexity',
-    'calculate_entropy',
-    'analyze_repetition',
-    'analyze_token_distribution',
-    'calculate_diversity_score',
-    'assess_quality',
-    'compare_quality',
+    "QualityMetrics",
+    "calculate_perplexity",
+    "calculate_entropy",
+    "analyze_repetition",
+    "analyze_token_distribution",
+    "calculate_diversity_score",
+    "assess_quality",
+    "compare_quality",
 ]

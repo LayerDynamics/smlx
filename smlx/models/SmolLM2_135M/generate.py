@@ -118,6 +118,11 @@ def generate(
     top_k: int = 0,
     stop_strings: Optional[list[str]] = None,
     verbose: bool = False,
+    validate_output: Optional[bool] = None,
+    max_repetition_ratio: float = 0.6,
+    min_tokens: int = 0,
+    retry_on_failure: bool = False,
+    max_retries: int = 2,
 ) -> str:
     """
     Generate text from a prompt.
@@ -134,6 +139,12 @@ def generate(
         top_k: Top-k sampling threshold
         stop_strings: Optional list of strings that stop generation
         verbose: Print generation progress
+        validate_output: Enable output validation (gibberish/repetition checks).
+            If None, falls back to the SMLX_VALIDATE_OUTPUT env var (default off).
+        max_repetition_ratio: Maximum allowed repetition ratio (0-1) when validating.
+        min_tokens: Minimum tokens to generate before a stop token is honored.
+        retry_on_failure: Re-generate if output validation fails.
+        max_retries: Maximum retry attempts when retry_on_failure is set.
 
     Returns:
         Generated text (excluding prompt)
@@ -157,6 +168,11 @@ def generate(
         top_k=top_k,
         stop_strings=stop_strings,
         verbose=verbose,
+        validate_output=validate_output,
+        max_repetition_ratio=max_repetition_ratio,
+        min_tokens=min_tokens,
+        retry_on_failure=retry_on_failure,
+        max_retries=max_retries,
     )
 
 

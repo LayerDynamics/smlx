@@ -19,9 +19,7 @@ class TestDoRASwitchLinear(unittest.TestCase):
 
     def test_initialization(self):
         """Test DoRASwitchLinear initialization."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, r=16, scale=1.0
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=3072, num_experts=8, r=16, scale=1.0)
 
         # Check LoRA matrices shape
         # lora_a: (num_experts, r, input_dims)
@@ -38,9 +36,7 @@ class TestDoRASwitchLinear(unittest.TestCase):
 
     def test_from_base_switch_linear(self):
         """Test creating DoRA from existing SwitchLinear."""
-        base_layer = SwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, bias=True
-        )
+        base_layer = SwitchLinear(input_dims=768, output_dims=3072, num_experts=8, bias=True)
 
         # Create DoRA layer from base
         dora_layer = DoRASwitchLinear.from_base(base_layer, r=16)
@@ -66,20 +62,20 @@ class TestDoRASwitchLinear(unittest.TestCase):
 
     def test_forward_pass(self):
         """Test forward pass with DoRA adaptation."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, r=16, scale=1.0
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=3072, num_experts=8, r=16, scale=1.0)
 
-        # Input: 32 tokens
-        x = mx.random.normal((32, 768))
-        # Expert routing
+        # Switch layers route one expert per token; the input carries an
+        # explicit per-expert token axis: (num_tokens, 1, input). This matches
+        # how SwitchGLU/SwitchMLP feed their SwitchLinears.
+        x = mx.random.normal((32, 1, 768))
+        # Expert routing (one flat index per token)
         indices = mx.array([i % 8 for i in range(32)])
 
         # Forward pass
         output = layer(x, indices)
 
-        # Check output shape
-        self.assertEqual(output.shape, (32, 3072))
+        # Check output shape: (num_tokens, 1, output)
+        self.assertEqual(output.shape, (32, 1, 3072))
 
     def test_magnitude_rescaling(self):
         """Test that DoRA applies magnitude rescaling."""
@@ -94,14 +90,14 @@ class TestDoRASwitchLinear(unittest.TestCase):
         for i in range(4):
             dora_layer.m[i] = mx.ones_like(dora_layer.m[i]) * (i + 1)
 
-        x = mx.random.normal((16, 768))
+        x = mx.random.normal((16, 1, 768))
         indices = mx.array([i % 4 for i in range(16)])
 
         # Forward pass applies magnitude rescaling
         output = dora_layer(x, indices)
 
-        # Check output shape
-        self.assertEqual(output.shape, (16, 768))
+        # Check output shape: (num_tokens, 1, output)
+        self.assertEqual(output.shape, (16, 1, 768))
 
     def test_dora_vs_lora(self):
         """Test that DoRA differs from LoRA due to magnitude rescaling."""
@@ -119,7 +115,7 @@ class TestDoRASwitchLinear(unittest.TestCase):
         lora_layer.lora_a = dora_layer.lora_a
         lora_layer.lora_b = dora_layer.lora_b
 
-        x = mx.random.normal((16, 768))
+        x = mx.random.normal((16, 1, 768))
         indices = mx.array([i % 4 for i in range(16)])
 
         dora_output = dora_layer(x, indices)
@@ -144,7 +140,7 @@ class TestDoRASwitchLinear(unittest.TestCase):
         self.assertIsInstance(fused_layer, SwitchLinear)
 
         # Test that fused output matches DoRA output
-        x = mx.random.normal((16, 768))
+        x = mx.random.normal((16, 1, 768))
         indices = mx.array([i % 4 for i in range(16)])
 
         dora_output = dora_layer(x, indices)
@@ -173,24 +169,20 @@ class TestDoRASwitchLinear(unittest.TestCase):
 
     def test_sorted_indices(self):
         """Test forward pass with sorted indices."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, r=16
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=3072, num_experts=8, r=16)
 
-        x = mx.random.normal((32, 768))
+        x = mx.random.normal((32, 1, 768))
         # Pre-sorted indices
         indices = mx.array(sorted([i % 8 for i in range(32)]))
 
         # Forward pass with sorted_indices=True
         output = layer(x, indices, sorted_indices=True)
 
-        self.assertEqual(output.shape, (32, 3072))
+        self.assertEqual(output.shape, (32, 1, 3072))
 
     def test_dropout(self):
         """Test that dropout is applied during training."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, r=16, dropout=0.5
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=3072, num_experts=8, r=16, dropout=0.5)
 
         # Dropout should be in the layer
         self.assertIsNotNone(layer.dropout)
@@ -204,7 +196,10 @@ class TestDoRASwitchLinear(unittest.TestCase):
         dora_layer.linear.freeze()
 
         # DoRA parameters (lora_a, lora_b, m) should be trainable
-        trainable = mx.tree_flatten(dora_layer.trainable_parameters())
+        # (tree_flatten lives in mlx.utils, not mlx.core)
+        from mlx.utils import tree_flatten
+
+        trainable = tree_flatten(dora_layer.trainable_parameters())
         self.assertGreater(len(trainable), 0)
 
 
@@ -213,9 +208,7 @@ class TestDoRASwitchIntegration(unittest.TestCase):
 
     def test_multi_expert_routing(self):
         """Test that different experts produce different outputs."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=768, num_experts=4, r=8, scale=1.0
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=768, num_experts=4, r=8, scale=1.0)
 
         # Set different LoRA weights and magnitudes per expert
         for i in range(4):
@@ -223,35 +216,33 @@ class TestDoRASwitchIntegration(unittest.TestCase):
             layer.lora_b[i] = mx.ones_like(layer.lora_b[i]) * (i + 1) * 0.01
             layer.m[i] = mx.ones_like(layer.m[i]) * (i + 1)
 
-        # Same input, different experts
-        x = mx.ones((4, 768))
+        # Same input, different experts. Input carries the per-expert token
+        # axis: (num_tokens, 1, input).
+        x = mx.ones((4, 1, 768))
         indices = mx.array([0, 1, 2, 3])
 
         output = layer(x, indices)
 
         # Each token processed by different expert should have different output
-        self.assertEqual(output.shape, (4, 768))
+        self.assertEqual(output.shape, (4, 1, 768))
 
     def test_large_batch_sorting(self):
         """Test DoRA with large batch that triggers sorting."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=3072, num_experts=8, r=16
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=3072, num_experts=8, r=16)
 
-        # Large batch (>= 64 tokens triggers sorting in SwitchLinear)
-        x = mx.random.normal((64, 768))
+        # Large batch (>= 64 tokens). Input carries the per-expert token axis:
+        # (num_tokens, 1, input).
+        x = mx.random.normal((64, 1, 768))
         indices = mx.random.randint(0, 8, (64,))
 
-        # Should handle sorting internally
+        # Should handle routing for all tokens
         output = layer(x, indices)
 
-        self.assertEqual(output.shape, (64, 3072))
+        self.assertEqual(output.shape, (64, 1, 3072))
 
     def test_magnitude_per_expert(self):
         """Test that magnitude parameter is independent per expert."""
-        layer = DoRASwitchLinear(
-            input_dims=768, output_dims=768, num_experts=4, r=8, scale=1.0
-        )
+        layer = DoRASwitchLinear(input_dims=768, output_dims=768, num_experts=4, r=8, scale=1.0)
 
         # Each expert should have independent magnitude
         # m: (num_experts, output_dims)

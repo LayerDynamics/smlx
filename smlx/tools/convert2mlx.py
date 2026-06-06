@@ -49,19 +49,23 @@ QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
 
 
 def make_shards(
-    weights: dict[str, mx.array], max_file_size_gb: int = 5
+    weights: dict[str, mx.array], max_file_size_gb: float = 5
 ) -> list[dict[str, mx.array]]:
     """
     Split weights into shards to avoid large files.
 
     Args:
         weights: Dictionary of weight name to MLX array
-        max_file_size_gb: Maximum file size in GB (default: 5)
+        max_file_size_gb: Maximum file size in GB (default: 5). Accepts
+            fractional values (e.g. 0.001) so callers/tests can force sharding
+            without materializing multi-gigabyte tensors.
 
     Returns:
         List of weight dictionaries (shards)
     """
-    max_file_size_bytes = max_file_size_gb << 30
+    # int() keeps the historical ``gb << 30`` result for whole-GB values while
+    # also supporting fractional GB thresholds.
+    max_file_size_bytes = int(max_file_size_gb * (1 << 30))
     shards = []
     shard, shard_size = {}, 0
 
@@ -85,6 +89,7 @@ def save_weights(
     save_path: Path,
     weights: dict[str, mx.array],
     metadata: Optional[dict[str, Any]] = None,
+    max_file_size_gb: float = 5,
 ) -> None:
     """
     Save weights with sharding and index file.
@@ -93,11 +98,13 @@ def save_weights(
         save_path: Directory to save weights
         weights: Dictionary of weight name to MLX array
         metadata: Optional metadata to include in safetensors
+        max_file_size_gb: Maximum size of each shard in GB (default: 5). Lower
+            it to force sharding for smaller weight sets.
     """
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
 
-    shards = make_shards(weights)
+    shards = make_shards(weights, max_file_size_gb=max_file_size_gb)
     shards_count = len(shards)
 
     shard_file_format = (
@@ -392,9 +399,7 @@ def quantize_model(
         is_2d_float_weight = (
             prefix is not None and tensor.ndim == 2 and tensor.dtype in float_dtypes
         )
-        already_quantized = (
-            prefix is not None and f"{prefix}.scales" in weights
-        )
+        already_quantized = prefix is not None and f"{prefix}.scales" in weights
         is_quantizable = (
             is_2d_float_weight
             and not already_quantized
@@ -617,11 +622,7 @@ def dequantize_model(
             prefix = name[: -len(".weight")]
             scales_key = f"{prefix}.scales"
             biases_key = f"{prefix}.biases"
-            if (
-                tensor.dtype == mx.uint32
-                and scales_key in weights
-                and biases_key in weights
-            ):
+            if tensor.dtype == mx.uint32 and scales_key in weights and biases_key in weights:
                 dequantized_weights[name] = mx.dequantize(
                     tensor,
                     weights[scales_key],
@@ -1177,9 +1178,7 @@ def convert(
         if quant_recipe and quant_recipe in QUANT_RECIPES:
             # Real per-layer mixed-bit quantization on the weights dict.
             logger.info(f"Using mixed-bit quantization recipe: {quant_recipe}")
-            weights, config = quantize_model_mixed(
-                weights, config, quant_recipe, q_group_size
-            )
+            weights, config = quantize_model_mixed(weights, config, quant_recipe, q_group_size)
         else:
             weights, config = quantize_model(weights, config, q_group_size, q_bits)
 

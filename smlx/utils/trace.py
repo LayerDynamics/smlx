@@ -80,7 +80,7 @@ def trace_memory(name: str = "Operation", verbose: bool = True):
         memory["available"] = 0
 
     # MLX memory (Metal GPU cache)
-    mx_before = mx.metal.get_cache_memory() / 1024 / 1024  # MB
+    mx_before = mx.get_cache_memory() / 1024 / 1024  # MB
 
     try:
         yield memory
@@ -91,7 +91,7 @@ def trace_memory(name: str = "Operation", verbose: bool = True):
         except (NameError, ImportError):
             mem_after = 0
 
-        mx_after = mx.metal.get_cache_memory() / 1024 / 1024
+        mx_after = mx.get_cache_memory() / 1024 / 1024
 
         memory["mem_before_mb"] = mem_before
         memory["mem_after_mb"] = mem_after
@@ -249,7 +249,7 @@ def trace_mlx_eval(name: str = "MLX Eval", verbose: bool = True):
         yield timing
     finally:
         # Force evaluation of any pending MLX operations
-        mx.eval(mx.metal.get_active_memory())
+        mx.eval(mx.get_active_memory())
 
         end = time.perf_counter()
         elapsed = end - start

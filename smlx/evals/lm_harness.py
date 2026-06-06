@@ -242,7 +242,7 @@ class SMLXLM(LM):
         is_greedy = mx.where(mask, is_greedy, False)
 
         mx.eval(target_logprobs, is_greedy)
-        mx.metal.clear_cache()
+        mx.clear_cache()
 
         return target_logprobs, lengths, is_greedy
 

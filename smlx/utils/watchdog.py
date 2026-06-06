@@ -112,8 +112,11 @@ class MemoryWatchdog:
         self._critical_fired = False
         self._thread = threading.Thread(target=self._monitor, daemon=True, name="MemoryWatchdog")
         self._thread.start()
-        logging.info("MemoryWatchdog started (warning=%.0f%%, critical=%.0f%%)",
-                     self.warning_threshold * 100, self.critical_threshold * 100)
+        logging.info(
+            "MemoryWatchdog started (warning=%.0f%%, critical=%.0f%%)",
+            self.warning_threshold * 100,
+            self.critical_threshold * 100,
+        )
 
     def stop(self) -> None:
         """Stop monitoring."""
@@ -136,12 +139,12 @@ class MemoryWatchdog:
                 mem_info = self._get_memory_info(process)
 
                 # Check thresholds
-                if mem_info['percent'] >= self.critical_threshold:
+                if mem_info["percent"] >= self.critical_threshold:
                     if not self._critical_fired:
                         self._handle_critical(mem_info)
                         self._critical_fired = True
 
-                elif mem_info['percent'] >= self.warning_threshold:
+                elif mem_info["percent"] >= self.warning_threshold:
                     if not self._warning_fired:
                         self._handle_warning(mem_info)
                         self._warning_fired = True
@@ -175,20 +178,20 @@ class MemoryWatchdog:
         system_total_gb = system_mem.total / 1e9
 
         return {
-            'process_gb': process_gb,
-            'system_available_gb': system_available_gb,
-            'system_total_gb': system_total_gb,
-            'percent': system_mem.percent / 100.0,
-            'timestamp': time.time(),
+            "process_gb": process_gb,
+            "system_available_gb": system_available_gb,
+            "system_total_gb": system_total_gb,
+            "percent": system_mem.percent / 100.0,
+            "timestamp": time.time(),
         }
 
     def _handle_warning(self, mem_info: dict) -> None:
         """Handle warning threshold exceeded."""
         logging.warning(
             "Memory warning: %.1f%% used (%.2fGB process, %.2fGB available)",
-            mem_info['percent'] * 100,
-            mem_info['process_gb'],
-            mem_info['system_available_gb']
+            mem_info["percent"] * 100,
+            mem_info["process_gb"],
+            mem_info["system_available_gb"],
         )
 
         if self.auto_cleanup:
@@ -204,9 +207,9 @@ class MemoryWatchdog:
         """Handle critical threshold exceeded."""
         logging.error(
             "CRITICAL: Memory at %.1f%% (%.2fGB process, %.2fGB available)",
-            mem_info['percent'] * 100,
-            mem_info['process_gb'],
-            mem_info['system_available_gb']
+            mem_info["percent"] * 100,
+            mem_info["process_gb"],
+            mem_info["system_available_gb"],
         )
 
         if self.auto_cleanup:
@@ -233,7 +236,7 @@ class MemoryWatchdog:
             import mlx.core as mx
 
             # Clear MLX Metal cache
-            mx.metal.clear_cache()
+            mx.clear_cache()
 
             # Force Python garbage collection
             gc.collect()

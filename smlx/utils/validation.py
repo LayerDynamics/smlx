@@ -123,11 +123,17 @@ class OutputValidator:
             >>> result = validator.validate_text("This is a test.")
             >>> assert result.is_valid
         """
-        # Check for None or non-string
-        if text is None or not isinstance(text, str):
+        # None is a programming error (nothing was produced to validate) rather
+        # than merely "invalid output", so surface it loudly instead of quietly
+        # returning is_valid=False.
+        if text is None:
+            raise TypeError("validate_text() received None; expected a string")
+
+        # Any other non-string type is invalid output, reported (not raised).
+        if not isinstance(text, str):
             return ValidationResult(
                 is_valid=False,
-                reason="Output is not a string",
+                reason=f"Output is not a string (got {type(text).__name__})",
                 confidence=1.0,
             )
 
@@ -165,14 +171,18 @@ class OutputValidator:
                     confidence=0.8,
                 )
 
-        # Check repetition
+        # Check repetition. Exceeding the configured ``max_repetition_ratio`` is
+        # a validation failure: returning is_valid=True while also reporting an
+        # "Excessive repetition" reason is contradictory (the caller is told the
+        # output is fine *and* given a failure reason), and it silently ignores
+        # the threshold the caller explicitly set.
         repetition_ratio = _calculate_repetition_ratio(text)
         if repetition_ratio > self.max_repetition_ratio:
             return ValidationResult(
-                is_valid=False if self.strict else True,
+                is_valid=False,
                 reason=f"Excessive repetition ({repetition_ratio:.2f} > {self.max_repetition_ratio})",
                 confidence=1.0 - repetition_ratio,
-                metadata={'repetition_ratio': repetition_ratio},
+                metadata={"repetition_ratio": repetition_ratio},
             )
 
         # Check special characters
@@ -203,18 +213,31 @@ class OutputValidator:
             is_valid=True,
             confidence=1.0,
             metadata={
-                'length': len(text),
-                'repetition_ratio': repetition_ratio,
+                "length": len(text),
+                "repetition_ratio": repetition_ratio,
             },
         )
 
-    def validate_audio(self, waveform: mx.array, sample_rate: int = 16000) -> ValidationResult:
+    def validate_audio(
+        self,
+        waveform: mx.array,
+        sample_rate: int = 16000,
+        min_duration: float = 0.0,
+        max_silence_ratio: float = 0.95,
+        check_clipping: bool = True,
+        check_silence: bool = True,
+    ) -> ValidationResult:
         """
         Validate audio output quality.
 
         Args:
-            waveform: Audio waveform as MLX array
-            sample_rate: Sample rate in Hz
+            waveform: Audio waveform as an MLX array, NumPy array, or sequence.
+            sample_rate: Sample rate in Hz (used to convert samples<->seconds).
+            min_duration: Minimum acceptable duration in seconds (0 = no minimum).
+            max_silence_ratio: Maximum allowed fraction of near-silent samples
+                before the clip is rejected as mostly silent (0-1).
+            check_clipping: Reject audio whose samples sit at the [-1, 1] rails.
+            check_silence: Reject completely-silent or mostly-silent audio.
 
         Returns:
             ValidationResult with validation outcome
@@ -233,18 +256,11 @@ class OutputValidator:
                 confidence=1.0,
             )
 
-        # Convert to numpy for analysis
-        waveform_np = np.array(waveform)
+        # Convert to numpy for analysis (handles MLX arrays, NumPy arrays, lists)
+        waveform_np = np.asarray(waveform, dtype=np.float32)
+        num_samples = waveform_np.size
 
-        # Check for all zeros (silence)
-        if np.all(waveform_np == 0):
-            return ValidationResult(
-                is_valid=False,
-                reason="Audio is completely silent (all zeros)",
-                confidence=1.0,
-            )
-
-        # Check for NaN or inf
+        # Check for NaN or inf first (corrupt output)
         if np.any(np.isnan(waveform_np)) or np.any(np.isinf(waveform_np)):
             return ValidationResult(
                 is_valid=False,
@@ -252,55 +268,86 @@ class OutputValidator:
                 confidence=1.0,
             )
 
-        # Check for clipping (values outside [-1, 1])
-        if np.any(waveform_np > 1.0) or np.any(waveform_np < -1.0):
+        # Check minimum duration (seconds)
+        duration_seconds = num_samples / sample_rate if sample_rate else 0.0
+        if min_duration and duration_seconds < min_duration:
             return ValidationResult(
                 is_valid=False,
-                reason="Audio is clipping (values outside [-1, 1])",
+                reason=(
+                    f"Audio too short ({duration_seconds:.3f}s < "
+                    f"{min_duration:.3f}s minimum duration)"
+                ),
                 confidence=0.9,
+                metadata={"duration_seconds": duration_seconds},
             )
 
-        # Check minimum length
-        if len(waveform_np) < self.min_length:
-            return ValidationResult(
-                is_valid=False,
-                reason=f"Audio too short ({len(waveform_np)} samples < {self.min_length})",
-                confidence=0.9,
-            )
+        # Check for clipping. Real clipping shows up as a non-trivial fraction of
+        # samples pinned at the [-1, 1] rails. A clean signal — even a loud one
+        # or the Gaussian tail of normalized audio — only grazes the rails on a
+        # few percent of samples, whereas genuinely clipped audio pins a large
+        # fraction. Flag only when >10% of samples are at/over the rail so loud
+        # clean audio is not mistaken for clipping.
+        if check_clipping and num_samples > 0:
+            clip_ratio = float(np.mean(np.abs(waveform_np) >= 0.999))
+            if clip_ratio > 0.10:
+                return ValidationResult(
+                    is_valid=False,
+                    reason=f"Audio is clipping ({clip_ratio:.1%} of samples at the rails)",
+                    confidence=0.9,
+                    metadata={"clip_ratio": clip_ratio},
+                )
 
-        # Check for excessive silence (more than 95% near-zero values)
-        silence_threshold = 0.01
-        silence_ratio = np.mean(np.abs(waveform_np) < silence_threshold)
-        if silence_ratio > 0.95:
-            return ValidationResult(
-                is_valid=False,
-                reason=f"Audio is mostly silent ({silence_ratio:.1%} silence)",
-                confidence=0.8,
-                metadata={'silence_ratio': silence_ratio},
-            )
+        # Check for silence (fully silent or mostly silent)
+        silence_ratio = 0.0
+        if check_silence and num_samples > 0:
+            if np.all(waveform_np == 0):
+                return ValidationResult(
+                    is_valid=False,
+                    reason="Audio is completely silent (all zeros)",
+                    confidence=1.0,
+                )
+            silence_threshold = 0.01
+            silence_ratio = float(np.mean(np.abs(waveform_np) < silence_threshold))
+            if silence_ratio > max_silence_ratio:
+                return ValidationResult(
+                    is_valid=False,
+                    reason=f"Audio is mostly silent ({silence_ratio:.1%} silence)",
+                    confidence=0.8,
+                    metadata={"silence_ratio": silence_ratio},
+                )
 
         # All checks passed
         return ValidationResult(
             is_valid=True,
             confidence=1.0,
             metadata={
-                'length_samples': len(waveform_np),
-                'duration_seconds': len(waveform_np) / sample_rate,
-                'rms': float(np.sqrt(np.mean(waveform_np**2))),
-                'peak': float(np.max(np.abs(waveform_np))),
+                "length_samples": num_samples,
+                "duration_seconds": duration_seconds,
+                "silence_ratio": silence_ratio,
+                "rms": float(np.sqrt(np.mean(waveform_np**2))) if num_samples else 0.0,
+                "peak": float(np.max(np.abs(waveform_np))) if num_samples else 0.0,
             },
         )
 
     def validate_tokens(
-        self, tokens: list[int], vocab_size: int, eos_token_id: Optional[int] = None
+        self,
+        tokens,
+        vocab_size: int,
+        min_tokens: int = 1,
+        max_repetition_ratio: float = 0.5,
+        eos_token_id: Optional[int] = None,
     ) -> ValidationResult:
         """
         Validate token sequence.
 
         Args:
-            tokens: Token IDs
-            vocab_size: Vocabulary size
-            eos_token_id: End-of-sequence token ID (optional)
+            tokens: Token IDs as a list, NumPy array, or MLX array.
+            vocab_size: Vocabulary size (tokens must be in ``[0, vocab_size)``).
+            min_tokens: Minimum acceptable number of tokens.
+            max_repetition_ratio: Maximum fraction a single token may occupy
+                before the sequence is rejected as pathologically repetitive.
+            eos_token_id: End-of-sequence token ID, excluded from the repetition
+                check (optional).
 
         Returns:
             ValidationResult with validation outcome
@@ -311,8 +358,15 @@ class OutputValidator:
             >>> result = validator.validate_tokens(tokens, vocab_size=50000)
             >>> assert result.is_valid
         """
+        # Normalize array-like inputs (MLX/NumPy) to a plain list of Python ints
+        # so downstream type/range checks behave identically regardless of source.
+        if isinstance(tokens, mx.array):
+            tokens = tokens.tolist()
+        elif isinstance(tokens, np.ndarray):
+            tokens = tokens.tolist()
+
         # Check for empty
-        if not tokens or len(tokens) == 0:
+        if tokens is None or len(tokens) == 0:
             return ValidationResult(
                 is_valid=False,
                 reason="Token sequence is empty",
@@ -321,50 +375,54 @@ class OutputValidator:
 
         # Check for invalid token IDs
         for i, token_id in enumerate(tokens):
-            if not isinstance(token_id, (int, np.integer)):
+            if isinstance(token_id, bool) or not isinstance(token_id, (int, np.integer)):
                 return ValidationResult(
                     is_valid=False,
-                    reason=f"Token {i} is not an integer: {type(token_id)}",
+                    reason=f"Token {i} is not an integer: {type(token_id).__name__}",
                     confidence=1.0,
                 )
             if token_id < 0 or token_id >= vocab_size:
                 return ValidationResult(
                     is_valid=False,
-                    reason=f"Token {i} out of vocabulary range: {token_id} (vocab_size={vocab_size})",
+                    reason=(
+                        f"Token {i} out of vocabulary range: {token_id} "
+                        f"(vocab_size={vocab_size})"
+                    ),
                     confidence=1.0,
                 )
 
         # Check minimum length
-        if len(tokens) < self.min_length:
+        if len(tokens) < min_tokens:
             return ValidationResult(
                 is_valid=False,
-                reason=f"Token sequence too short ({len(tokens)} < {self.min_length})",
+                reason=f"Token sequence too short ({len(tokens)} < {min_tokens} tokens)",
                 confidence=0.9,
             )
 
-        # Check for pathological repetition (same token repeated many times)
-        if len(tokens) > 10:
-            # Check if any token appears more than 50% of the time
-            from collections import Counter
+        # Check for pathological repetition (a single token dominating the output)
+        from collections import Counter
 
-            token_counts = Counter(tokens)
-            most_common_token, most_common_count = token_counts.most_common(1)[0]
+        token_counts = Counter(tokens)
+        most_common_token, most_common_count = token_counts.most_common(1)[0]
 
-            # Exclude EOS token from repetition check
-            if eos_token_id is not None and most_common_token == eos_token_id:
-                if len(token_counts) > 1:
-                    most_common_token, most_common_count = token_counts.most_common(2)[1]
-                else:
-                    most_common_count = 0
+        # Exclude EOS token from the repetition check
+        if eos_token_id is not None and most_common_token == eos_token_id:
+            if len(token_counts) > 1:
+                most_common_token, most_common_count = token_counts.most_common(2)[1]
+            else:
+                most_common_count = 0
 
-            repetition_ratio = most_common_count / len(tokens)
-            if repetition_ratio > 0.5:
-                return ValidationResult(
-                    is_valid=False,
-                    reason=f"Pathological repetition: token {most_common_token} appears {repetition_ratio:.1%} of time",
-                    confidence=0.9,
-                    metadata={'repetition_ratio': repetition_ratio},
-                )
+        repetition_ratio = most_common_count / len(tokens)
+        if repetition_ratio > max_repetition_ratio:
+            return ValidationResult(
+                is_valid=False,
+                reason=(
+                    f"Excessive token repetition: token {most_common_token} appears "
+                    f"{repetition_ratio:.1%} of the time (> {max_repetition_ratio:.0%})"
+                ),
+                confidence=0.9,
+                metadata={"repetition_ratio": repetition_ratio},
+            )
 
         # All checks passed
         unique_ratio = len(set(tokens)) / len(tokens)
@@ -372,14 +430,15 @@ class OutputValidator:
             is_valid=True,
             confidence=1.0,
             metadata={
-                'length': len(tokens),
-                'unique_tokens': len(set(tokens)),
-                'unique_ratio': unique_ratio,
+                "length": len(tokens),
+                "unique_tokens": len(set(tokens)),
+                "unique_ratio": unique_ratio,
             },
         )
 
 
 # Convenience functions
+
 
 def validate_text_output(
     text: str,
@@ -413,19 +472,31 @@ def validate_text_output(
         check_gibberish=check_gibberish,
     )
     result = validator.validate_text(text)
-    return result.is_valid, result.reason
+    # Convenience callers expect an empty string (not None) when output is valid.
+    return result.is_valid, (result.reason or "")
 
 
-def validate_audio_output(waveform: mx.array, sample_rate: int = 16000) -> tuple[bool, Optional[str]]:
+def validate_audio_output(
+    waveform: mx.array,
+    sample_rate: int = 16000,
+    min_duration: float = 0.0,
+    max_silence_ratio: float = 0.95,
+    check_clipping: bool = True,
+    check_silence: bool = True,
+) -> tuple[bool, str]:
     """
     Quick validation of audio output.
 
     Args:
-        waveform: Audio waveform as MLX array
-        sample_rate: Sample rate in Hz
+        waveform: Audio waveform (MLX array, NumPy array, or sequence).
+        sample_rate: Sample rate in Hz.
+        min_duration: Minimum acceptable duration in seconds (0 = no minimum).
+        max_silence_ratio: Maximum allowed fraction of near-silent samples (0-1).
+        check_clipping: Reject audio pinned at the [-1, 1] rails.
+        check_silence: Reject completely- or mostly-silent audio.
 
     Returns:
-        Tuple of (is_valid, reason_if_invalid)
+        Tuple of (is_valid, reason) — reason is "" when valid.
 
     Example:
         >>> import mlx.core as mx
@@ -433,34 +504,55 @@ def validate_audio_output(waveform: mx.array, sample_rate: int = 16000) -> tuple
         >>> is_valid, reason = validate_audio_output(waveform)
     """
     validator = OutputValidator()
-    result = validator.validate_audio(waveform, sample_rate)
-    return result.is_valid, result.reason
+    result = validator.validate_audio(
+        waveform,
+        sample_rate,
+        min_duration=min_duration,
+        max_silence_ratio=max_silence_ratio,
+        check_clipping=check_clipping,
+        check_silence=check_silence,
+    )
+    return result.is_valid, (result.reason or "")
 
 
 def validate_tokens(
-    tokens: list[int], vocab_size: int, eos_token_id: Optional[int] = None
-) -> tuple[bool, Optional[str]]:
+    tokens,
+    vocab_size: int,
+    min_tokens: int = 1,
+    max_repetition_ratio: float = 0.5,
+    eos_token_id: Optional[int] = None,
+) -> tuple[bool, str]:
     """
     Quick validation of token sequence.
 
     Args:
-        tokens: Token IDs
-        vocab_size: Vocabulary size
-        eos_token_id: End-of-sequence token ID
+        tokens: Token IDs (list, NumPy array, or MLX array).
+        vocab_size: Vocabulary size (tokens must be in ``[0, vocab_size)``).
+        min_tokens: Minimum acceptable number of tokens.
+        max_repetition_ratio: Maximum fraction a single token may occupy.
+        eos_token_id: End-of-sequence token ID, excluded from the repetition
+            check (optional).
 
     Returns:
-        Tuple of (is_valid, reason_if_invalid)
+        Tuple of (is_valid, reason) — reason is "" when valid.
 
     Example:
         >>> is_valid, reason = validate_tokens([1, 2, 3], vocab_size=50000)
         >>> assert is_valid
     """
     validator = OutputValidator()
-    result = validator.validate_tokens(tokens, vocab_size, eos_token_id)
-    return result.is_valid, result.reason
+    result = validator.validate_tokens(
+        tokens,
+        vocab_size,
+        min_tokens=min_tokens,
+        max_repetition_ratio=max_repetition_ratio,
+        eos_token_id=eos_token_id,
+    )
+    return result.is_valid, (result.reason or "")
 
 
 # Internal helper functions
+
 
 def _is_gibberish(text: str, threshold: float = 0.6) -> tuple[bool, Optional[str]]:
     """
@@ -483,7 +575,7 @@ def _is_gibberish(text: str, threshold: float = 0.6) -> tuple[bool, Optional[str
         return False, None
 
     # Check vowel ratio
-    vowels = 'aeiouAEIOU'
+    vowels = "aeiouAEIOU"
     vowel_count = sum(1 for c in text if c in vowels)
     alpha_count = sum(1 for c in text if c.isalpha())
 
@@ -500,7 +592,7 @@ def _is_gibberish(text: str, threshold: float = 0.6) -> tuple[bool, Optional[str
             return True, "Starts with excessive special characters"
 
     # Check for Unicode control characters
-    control_chars = sum(1 for c in text if ord(c) < 32 and c not in '\n\t\r')
+    control_chars = sum(1 for c in text if ord(c) < 32 and c not in "\n\t\r")
     if control_chars > 0:
         return True, "Contains control characters"
 
@@ -562,14 +654,19 @@ def _calculate_special_char_ratio(text: str) -> float:
     if len(text) == 0:
         return 0.0
 
-    special_chars = sum(1 for c in text if c in string.punctuation or ord(c) > 127)
+    # A character is "special" when it is neither an (any-script) letter/digit
+    # nor whitespace. Using ``str.isalnum`` keeps non-ASCII letters such as CJK
+    # or Cyrillic from being miscounted as special (the old ``ord(c) > 127``
+    # check flagged all non-ASCII text as gibberish-adjacent). Genuine symbols
+    # and punctuation (including emoji) still count.
+    special_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
     return special_chars / len(text)
 
 
 __all__ = [
-    'ValidationResult',
-    'OutputValidator',
-    'validate_text_output',
-    'validate_audio_output',
-    'validate_tokens',
+    "ValidationResult",
+    "OutputValidator",
+    "validate_text_output",
+    "validate_audio_output",
+    "validate_tokens",
 ]

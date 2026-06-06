@@ -113,26 +113,26 @@ class TestModelLoading:
         assert "whisper-tiny" in manager.loaded_models
 
     @patch("smlx.server.model_manager.ModelManager._load_embedding")
-    async def test_load_embedding_model_not_implemented(self, mock_load_embedding):
-        """Test loading an embedding model raises NotImplementedError."""
+    async def test_load_embedding_model_routes_and_propagates_errors(self, mock_load_embedding):
+        """load_model routes embedding ids to _load_embedding and surfaces its errors."""
         manager = ModelManager()
-        mock_load_embedding.side_effect = NotImplementedError(
-            "Embedding models not yet implemented"
-        )
+        mock_load_embedding.side_effect = RuntimeError("backend exploded")
 
-        with pytest.raises(NotImplementedError, match="Embedding models not yet implemented"):
+        with pytest.raises(RuntimeError, match="backend exploded"):
             await manager.load_model("all-MiniLM-L6-v2")
 
-    @patch("smlx.server.model_manager.ModelManager._load_vlm")
-    async def test_load_vlm_model_not_implemented(self, mock_load_vlm):
-        """Test loading a VLM raises NotImplementedError."""
-        manager = ModelManager()
-        mock_load_vlm.side_effect = NotImplementedError(
-            "Vision-language models not yet implemented"
-        )
+        mock_load_embedding.assert_called_once_with("all-MiniLM-L6-v2")
 
-        with pytest.raises(NotImplementedError, match="Vision-language models not yet implemented"):
+    @patch("smlx.server.model_manager.ModelManager._load_vlm")
+    async def test_load_vlm_model_routes_and_propagates_errors(self, mock_load_vlm):
+        """load_model routes VLM ids to _load_vlm and surfaces its errors."""
+        manager = ModelManager()
+        mock_load_vlm.side_effect = RuntimeError("backend exploded")
+
+        with pytest.raises(RuntimeError, match="backend exploded"):
             await manager.load_model("SmolVLM-256M")
+
+        mock_load_vlm.assert_called_once_with("SmolVLM-256M")
 
     async def test_load_unsupported_model_type(self):
         """Test loading a model with unsupported type."""
@@ -304,7 +304,7 @@ class TestModelListings:
 class TestCleanup:
     """Tests for cleanup functionality."""
 
-    @patch("mlx.core.metal.clear_cache")
+    @patch("mlx.core.clear_cache")
     async def test_cleanup(self, mock_clear_cache):
         """Test cleanup clears all models and caches."""
         manager = ModelManager()
@@ -388,16 +388,39 @@ class TestSpecificModelLoaders:
         assert model == mock_model
         mock_load.assert_called_once_with("whisper-tiny")
 
-    async def test_load_embedding_not_implemented(self):
-        """Test loading embedding model raises NotImplementedError."""
+    @patch("smlx.models.MiniLM.load")
+    async def test_load_embedding(self, mock_load):
+        """Embedding loading is implemented: it delegates to MiniLM.load."""
+        manager = ModelManager()
+        mock_model = Mock()
+        mock_tokenizer = Mock()
+        mock_load.return_value = (mock_model, mock_tokenizer)
+
+        model, tokenizer = await manager._load_embedding("all-MiniLM-L6-v2")
+
+        assert model == mock_model
+        assert tokenizer == mock_tokenizer
+        # The known alias normalizes to the canonical variant name.
+        mock_load.assert_called_once_with("all-MiniLM-L6-v2")
+
+    @patch("smlx.models.SmolVLM_256M.load")
+    async def test_load_vlm(self, mock_load):
+        """VLM loading is implemented: it delegates to the matched VLM loader."""
+        manager = ModelManager()
+        mock_model = Mock()
+        mock_processor = Mock()
+        mock_load.return_value = (mock_model, mock_processor)
+
+        model, processor = await manager._load_vlm("SmolVLM-256M")
+
+        assert model == mock_model
+        assert processor == mock_processor
+        # SmolVLM-256M resolves to its default HuggingFace repo.
+        mock_load.assert_called_once_with("HuggingFaceTB/SmolVLM-256M-Instruct")
+
+    async def test_load_vlm_unknown_raises(self):
+        """An unrecognized VLM id raises a clear ValueError (not silent load)."""
         manager = ModelManager()
 
-        with pytest.raises(NotImplementedError, match="Embedding models not yet implemented"):
-            await manager._load_embedding("all-MiniLM-L6-v2")
-
-    async def test_load_vlm_not_implemented(self):
-        """Test loading VLM raises NotImplementedError."""
-        manager = ModelManager()
-
-        with pytest.raises(NotImplementedError, match="Vision-language models not yet implemented"):
-            await manager._load_vlm("SmolVLM-256M")
+        with pytest.raises(ValueError, match="Unknown VLM model"):
+            await manager._load_vlm("totally-not-a-vlm")

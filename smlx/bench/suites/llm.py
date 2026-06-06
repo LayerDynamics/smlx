@@ -145,7 +145,7 @@ def benchmark_llm(
     )
 
     # Get peak memory
-    peak_memory_gb = mx.metal.get_peak_memory() / 1e9 if mx.metal.is_available() else 0.0
+    peak_memory_gb = mx.get_peak_memory() / 1e9 if mx.metal.is_available() else 0.0
 
     # Get model name
     model_name = _get_model_name(model)
@@ -571,9 +571,7 @@ def benchmark_llm_streaming(
 
     # Per-token timing requires decoding each step, so a tokenizer is mandatory.
     if tokenizer is None:
-        raise ValueError(
-            "benchmark_llm_streaming requires a tokenizer for per-token timing."
-        )
+        raise ValueError("benchmark_llm_streaming requires a tokenizer for per-token timing.")
 
     # Resolve a text prompt (stream_generate operates on strings).
     if isinstance(prompt, str):
@@ -594,7 +592,9 @@ def benchmark_llm_streaming(
     warmup_tokens = min(4, config.generation_tokens)
     if warmup_tokens > 0:
         for _ in stream_generate(
-            model, tokenizer, prompt_text,
+            model,
+            tokenizer,
+            prompt_text,
             max_tokens=warmup_tokens,
             temperature=config.temperature,
             top_p=config.top_p,
@@ -621,7 +621,7 @@ def benchmark_llm_streaming(
             per_token_times.append((timestamps[i] - timestamps[i - 1]) * 1000.0)
 
     if num_generated >= 1:
-        prompt_time = timestamps[0] - start          # prefill (incl. first token)
+        prompt_time = timestamps[0] - start  # prefill (incl. first token)
         generation_time = timestamps[-1] - timestamps[0]  # decode of remaining tokens
         decode_tokens = num_generated - 1
     else:
@@ -629,7 +629,7 @@ def benchmark_llm_streaming(
         generation_time = 0.0
         decode_tokens = 0
 
-    peak_memory_gb = mx.metal.get_peak_memory() / 1e9 if mx.metal.is_available() else 0.0
+    peak_memory_gb = mx.get_peak_memory() / 1e9 if mx.metal.is_available() else 0.0
 
     stats = create_model_stats(
         model_name=_get_model_name(model),

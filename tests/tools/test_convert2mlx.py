@@ -54,9 +54,7 @@ class TestMakeShards:
         # Each 1000x1000 float32 = 4MB, so 5 layers = 20MB total
         max_file_size_gb = 1  # 1GB - but we'll pack them so only 1 shard
         # Create larger weights to force multiple shards (250MB each = 1.25GB total)
-        weights = {
-            f"layer{i}.weight": mx.random.normal((8000, 8000)) for i in range(5)
-        }
+        weights = {f"layer{i}.weight": mx.random.normal((8000, 8000)) for i in range(5)}
 
         shards = make_shards(weights, max_file_size_gb=max_file_size_gb)
 
@@ -114,31 +112,31 @@ class TestSaveWeights:
 
     def test_save_with_sharding(self):
         """Test saving weights with multiple shards."""
-        # Create large weights that will be sharded by make_shards()
-        # Note: save_weights() uses make_shards() internally with default 5GB
-        # Each 8000x8000 float32 = 256MB, so 20 layers = 5.12GB will trigger sharding
-        weights = {
-            f"layer{i}.weight": mx.random.normal((8000, 8000)) for i in range(20)
-        }
+        # Force sharding with a tiny per-shard cap instead of materializing
+        # multi-gigabyte tensors (the old version allocated ~5GB and wrote it to
+        # disk, which is slow and fails in disk-constrained/CI environments).
+        # Each 256x256 float32 array is ~256KB; with a ~512KB cap, 10 arrays
+        # span several shards.
+        weights = {f"layer{i}.weight": mx.random.normal((256, 256)) for i in range(10)}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir)
-            save_weights(save_path, weights)
+            save_weights(save_path, weights, max_file_size_gb=0.0005)
 
-            # Should create multiple shard files
+            # The tiny threshold must force multiple shard files
             shard_files = list(save_path.glob("model-*.safetensors"))
-            # If shards created, should have model-00001-of-XXXXX.safetensors files
-            # Otherwise, just model.safetensors
             total_files = list(save_path.glob("model*.safetensors"))
             assert len(total_files) > 0
+            assert len(shard_files) > 1, "tiny shard cap should produce >1 shard"
 
-            # If sharded, should have index file
-            if len(shard_files) > 0:
-                assert (save_path / "model.safetensors.index.json").exists()
-                with open(save_path / "model.safetensors.index.json") as f:
-                    index = json.load(f)
-                    assert "weight_map" in index
-                    assert "metadata" in index
+            # Sharding must produce an index file with a complete weight map
+            assert (save_path / "model.safetensors.index.json").exists()
+            with open(save_path / "model.safetensors.index.json") as f:
+                index = json.load(f)
+            assert "weight_map" in index
+            assert "metadata" in index
+            # Every weight must be mapped to some shard
+            assert set(index["weight_map"].keys()) == set(weights.keys())
 
 
 @pytest.mark.unit
@@ -162,6 +160,7 @@ class TestGetModelPath:
 
             # Change to temp directory and use relative path
             import os
+
             old_cwd = os.getcwd()
             try:
                 os.chdir(tmpdir)
@@ -360,9 +359,7 @@ class TestQuantizeModel:
         weights = {"layer.weight": mx.random.normal((128, 128)).astype(mx.float32)}
         config = {"model_type": "test"}
 
-        result_weights, result_config = quantize_model(
-            weights, config, group_size=64, bits=4
-        )
+        result_weights, result_config = quantize_model(weights, config, group_size=64, bits=4)
 
         # Weights must be REALLY quantized: the weight becomes packed uint32 with
         # scales/biases siblings (not returned as-is, which was the old no-op bug).

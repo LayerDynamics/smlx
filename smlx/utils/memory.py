@@ -22,7 +22,7 @@ def get_peak_memory_gb() -> float:
         >>> peak_gb = get_peak_memory_gb()
         >>> print(f"Peak memory: {peak_gb:.2f} GB")
     """
-    return mx.metal.get_peak_memory() / 1e9
+    return mx.get_peak_memory() / 1e9
 
 
 def get_active_memory_gb() -> float:
@@ -32,7 +32,7 @@ def get_active_memory_gb() -> float:
     Returns:
         Active memory usage in GB
     """
-    return mx.metal.get_active_memory() / 1e9
+    return mx.get_active_memory() / 1e9
 
 
 def get_cache_memory_gb() -> float:
@@ -42,7 +42,7 @@ def get_cache_memory_gb() -> float:
     Returns:
         Cache memory usage in GB
     """
-    return mx.metal.get_cache_memory() / 1e9
+    return mx.get_cache_memory() / 1e9
 
 
 def clear_cache():
@@ -51,7 +51,7 @@ def clear_cache():
 
     Useful to call between benchmark runs to ensure consistent memory usage.
     """
-    mx.metal.clear_cache()
+    mx.clear_cache()
 
 
 def reset_peak_memory():
@@ -60,7 +60,7 @@ def reset_peak_memory():
 
     Call this before a benchmark to get accurate peak memory for that specific run.
     """
-    mx.metal.reset_peak_memory()
+    mx.reset_peak_memory()
 
 
 def get_device_info() -> dict[str, Any]:
@@ -85,9 +85,7 @@ def get_device_info() -> dict[str, Any]:
         }
 
     info: dict[str, Any] = mx.metal.device_info()
-    info["max_recommended_working_set_size_gb"] = (
-        info["max_recommended_working_set_size"] / 1e9
-    )
+    info["max_recommended_working_set_size_gb"] = info["max_recommended_working_set_size"] / 1e9
     return info
 
 
@@ -163,9 +161,7 @@ def memory_profiler(reset_peak: bool = True, clear_cache_before: bool = True):
         stats.peak_gb = get_peak_memory_gb()
 
 
-def estimate_model_memory(
-    num_parameters: int, dtype: mx.Dtype = mx.float16
-) -> dict[str, float]:
+def estimate_model_memory(num_parameters: int, dtype: mx.Dtype = mx.float16) -> dict[str, float]:
     """
     Estimate memory usage for a model.
 
@@ -347,13 +343,13 @@ class MemoryMonitor:
         total_gb = active_gb + cache_gb
 
         device_info = get_device_info()
-        max_gb = device_info['max_recommended_working_set_size_gb']
+        max_gb = device_info["max_recommended_working_set_size_gb"]
 
-        status = 'ok'
+        status = "ok"
         recommendations = []
 
         if total_gb >= self.critical_gb:
-            status = 'critical'
+            status = "critical"
             recommendations = [
                 "Immediately clear cache with clear_cache() or smart_cleanup()",
                 "Reduce batch size to 1",
@@ -363,7 +359,7 @@ class MemoryMonitor:
                 "Close other applications to free system memory",
             ]
         elif total_gb >= self.warning_gb:
-            status = 'warning'
+            status = "warning"
             recommendations = [
                 "Clear cache with clear_cache() or smart_cleanup()",
                 "Monitor memory growth closely",
@@ -372,13 +368,13 @@ class MemoryMonitor:
             ]
 
         result = {
-            'status': status,
-            'active_gb': active_gb,
-            'cache_gb': cache_gb,
-            'total_gb': total_gb,
-            'max_gb': max_gb,
-            'utilization': total_gb / max_gb if max_gb > 0 else 0,
-            'recommendations': recommendations,
+            "status": status,
+            "active_gb": active_gb,
+            "cache_gb": cache_gb,
+            "total_gb": total_gb,
+            "max_gb": max_gb,
+            "utilization": total_gb / max_gb if max_gb > 0 else 0,
+            "recommendations": recommendations,
         }
 
         self.history.append(result)
@@ -402,23 +398,23 @@ class MemoryMonitor:
             ...     print("Memory leak detected!")
         """
         if len(self.history) < 2:
-            return 'stable'
+            return "stable"
 
         recent = self.history[-last_n:]
-        values = [h['total_gb'] for h in recent]
+        values = [h["total_gb"] for h in recent]
 
         if len(values) < 2:
-            return 'stable'
+            return "stable"
 
         # Simple linear trend analysis
         avg_change = (values[-1] - values[0]) / len(values)
 
         if avg_change > 0.1:  # Growing by >0.1GB per check
-            return 'increasing'
+            return "increasing"
         elif avg_change < -0.1:  # Decreasing by >0.1GB per check
-            return 'decreasing'
+            return "decreasing"
         else:
-            return 'stable'
+            return "stable"
 
     def reset(self) -> None:
         """Reset monitoring history."""
