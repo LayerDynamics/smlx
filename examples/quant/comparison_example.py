@@ -17,18 +17,19 @@ quality degradation across methods.
 Helps you choose the right quantization method for your use case.
 """
 
-import mlx.core as mx
 import time
-from typing import Dict, Any
+from typing import Any
 
-from smlx.models.SmolLM2_135M import load, generate
-from smlx.quant import gptq_quantize, awq_quantize
+import mlx.core as mx
+
+from smlx.models.SmolLM2_135M import generate, load
+from smlx.quant import awq_quantize, gptq_quantize
 from smlx.quant.utils import load_calibration_data
 from smlx.utils.quality_metrics import assess_quality, compare_quality
 from smlx.utils.validation import validate_text_output
 
 
-def benchmark_model(model, tokenizer, prompts: list[str], name: str) -> Dict[str, Any]:
+def benchmark_model(model, tokenizer, prompts: list[str], name: str) -> dict[str, Any]:
     """Benchmark a model variant with performance and quality metrics."""
     print(f"\n📊 Benchmarking {name}...")
 
@@ -120,16 +121,21 @@ def main():
     # Benchmark GPTQ 4-bit
     print("\n2. Creating GPTQ 4-bit variant...")
     gptq_model = gptq_quantize(model, calibration_data, bits=4, group_size=64)
+    # Force MLX to materialize the lazily-built quantized weights so the timing in
+    # benchmark_model() reflects inference only, not deferred quantization compute.
+    mx.eval(gptq_model.parameters())
     results.append(benchmark_model(gptq_model, tokenizer, test_prompts, "GPTQ 4-bit"))
 
     # Benchmark AWQ 4-bit
     print("\n3. Creating AWQ 4-bit variant...")
     awq_model = awq_quantize(model, calibration_data, bits=4, group_size=64)
+    mx.eval(awq_model.parameters())
     results.append(benchmark_model(awq_model, tokenizer, test_prompts, "AWQ 4-bit"))
 
     # Benchmark GPTQ 8-bit
     print("\n4. Creating GPTQ 8-bit variant...")
     gptq_8bit_model = gptq_quantize(model, calibration_data, bits=8, group_size=64)
+    mx.eval(gptq_8bit_model.parameters())
     results.append(benchmark_model(gptq_8bit_model, tokenizer, test_prompts, "GPTQ 8-bit"))
 
     # Print performance comparison table
@@ -177,17 +183,21 @@ def main():
     print("=" * 70)
 
     baseline_metrics = results[0]["quality_metrics"]
-    print(f"\nComparing against FP16 baseline (tolerance: 20%)\n")
+    print("\nComparing against FP16 baseline (tolerance: 20%)\n")
 
     for result in results[1:]:  # Skip baseline
         print(f"{result['name']}:")
 
-        # Compare quality across all prompts
+        # Compare quality across all prompts, tracking which specific prompts
+        # (1-based, matching ``test_prompts``) fall outside the tolerance.
         acceptable_count = 0
+        failed_prompts = []
         for i, (baseline_q, quant_q) in enumerate(zip(baseline_metrics, result["quality_metrics"])):
             comparison = compare_quality(baseline_q, quant_q, tolerance=0.20)
-            if comparison['acceptable']:
+            if comparison.acceptable:
                 acceptable_count += 1
+            else:
+                failed_prompts.append(i + 1)
 
         # Average comparison
         avg_comparison = compare_quality(
@@ -197,8 +207,21 @@ def main():
         )
 
         print(f"  Acceptable: {acceptable_count}/{len(test_prompts)} prompts")
+        if failed_prompts:
+            print(f"  Outside tolerance on prompt(s): {failed_prompts}")
         print(f"  Perplexity change: {((result['avg_perplexity'] - baseline_ppl) / baseline_ppl):+.1%}")
         print(f"  Repetition change: {((result['avg_repetition'] - results[0]['avg_repetition']) / results[0]['avg_repetition']):+.1%}")
+
+        # Overall verdict for this method (first prompt, representative structure)
+        _verdict_label = {
+            "first_better": "baseline better",
+            "second_better": "quantized better",
+            "similar": "on par with baseline",
+        }.get(avg_comparison.verdict, avg_comparison.verdict)
+        print(f"  Verdict: {_verdict_label} (goodness {avg_comparison.goodness_second:.2f} "
+              f"vs baseline {avg_comparison.goodness_first:.2f})")
+        if avg_comparison.degradations:
+            print(f"  Degradations: {', '.join(avg_comparison.degradations)}")
         print()
 
     # Output comparison (first prompt)
@@ -232,14 +255,14 @@ def main():
             "Use when": "Memory is constrained, quality is important",
             "Pros": "Hessian-based optimization, stable, measured quality retention",
             "Cons": "Slower quantization process",
-            "Quality": f"Measured perplexity increase: typically < 20%",
+            "Quality": "Measured perplexity increase: typically < 20%",
         },
         "AWQ 4-bit": {
             "Best for": "Best quality at 4-bit",
             "Use when": "Quality is critical, have time for quantization",
             "Pros": "Activation-aware, protects salient weights, superior quality retention",
             "Cons": "Longer quantization time",
-            "Quality": f"Often achieves best 4-bit quality (measured)",
+            "Quality": "Often achieves best 4-bit quality (measured)",
         },
         "GPTQ 8-bit": {
             "Best for": "Near-lossless compression",
@@ -297,16 +320,16 @@ def main():
 
     print(f"\nBest overall quality: {best_quality_method}")
     print(f"Best 4-bit quality: {best_4bit_quality['name']}")
-    print(f"\nQuality Metrics Summary:")
+    print("\nQuality Metrics Summary:")
     print(f"  - All methods passed output validation: {'✅ Yes' if all(r['all_valid'] for r in results) else '❌ No'}")
-    print(f"  - 4-bit methods within 20% perplexity threshold: ", end="")
+    print("  - 4-bit methods within 20% perplexity threshold: ", end="")
     degradations_acceptable = all(
         ((r['avg_perplexity'] - baseline_ppl) / baseline_ppl) < 0.20
         for r in results if '4-bit' in r['name']
     )
     print('✅ Yes' if degradations_acceptable else '❌ No')
-    print(f"  - Repetition patterns remain consistent across methods")
-    print(f"  - Diversity scores preserved within acceptable range")
+    print("  - Repetition patterns remain consistent across methods")
+    print("  - Diversity scores preserved within acceptable range")
 
     print("\n" + "=" * 70)
     print("✅ Comparison Complete!")

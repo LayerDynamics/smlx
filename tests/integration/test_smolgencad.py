@@ -7,22 +7,21 @@ Integration tests for smolGenCad.
 Tests complete workflows from text input to CAD sequence generation.
 """
 
+import mlx.core as mx
 import pytest
 
-import mlx.core as mx
-
 from smlx.models.smolGenCad import (
+    CADCommandType,
+    CADTokenizer,
     SmolGenCad,
     SmolGenCadConfig,
-    CADTokenizer,
-    CADCommandType,
+    auto_fix_sequence,
     generate,
     generate_batch,
     sequence_to_dict,
     sequence_to_json,
     sequence_to_python,
     validate_sequence,
-    auto_fix_sequence,
 )
 from smlx.models.smolGenCad.cache import make_cache
 
@@ -101,6 +100,15 @@ class TestModelLoading:
         assert hasattr(model, "encoder")
         assert hasattr(model, "decoder")
         assert hasattr(model, "cad_head")
+
+        # Every leaf of the parameter tree must be a materialized MLX array — this
+        # is what makes the model runnable on Metal and catches a component that
+        # was left as a plain Python value instead of an nn-registered weight.
+        from mlx.utils import tree_flatten
+
+        params = tree_flatten(model.parameters())
+        assert params, "model exposes no parameters"
+        assert all(isinstance(p, mx.array) for _, p in params)
 
     def test_tokenizer_initialization(self, cad_tokenizer):
         """Test CAD tokenizer can be initialized."""
@@ -324,6 +332,60 @@ class TestExportFormats:
         python_code = sequence_to_python(empty_seq)
         # Should still have import statement
         assert "import cadquery" in python_code
+
+    @pytest.mark.parametrize("plane", ["XY", "XZ", "YZ"])
+    def test_export_python_valid_planes(self, plane):
+        """A canonical sketch plane is emitted verbatim into the CadQuery code."""
+        sequence = [
+            (CADCommandType.SKETCH_START, {"plane": plane}),
+            (CADCommandType.CIRCLE, {"cx": 0, "cy": 0, "r": 10}),
+            (CADCommandType.SKETCH_END, {}),
+        ]
+        python_code = sequence_to_python(sequence)
+
+        assert f"result = result.workplane('{plane}')" in python_code
+        assert "invalid sketch plane" not in python_code
+
+    def test_export_python_invalid_plane_defaults_to_xy(self):
+        """An out-of-spec plane falls back to XY and is flagged, not used raw."""
+        sequence = [
+            (CADCommandType.SKETCH_START, {"plane": "BOGUS"}),
+            (CADCommandType.CIRCLE, {"cx": 0, "cy": 0, "r": 10}),
+            (CADCommandType.SKETCH_END, {}),
+        ]
+        python_code = sequence_to_python(sequence)
+
+        # The only workplane() call uses the safe fallback, never the bad value.
+        assert "result = result.workplane('XY')" in python_code
+        assert "workplane('BOGUS')" not in python_code
+        # The rejected value is surfaced in a diagnostic comment.
+        assert "# warning: invalid sketch plane 'BOGUS', defaulting to 'XY'" in python_code
+
+    def test_export_python_plane_with_stray_quote_cannot_break_codegen(self):
+        """A stray quote in the plane string must not break the emitted Python.
+
+        The plane is interpolated into ``workplane('{plane}')``; an injected quote
+        would otherwise produce syntactically invalid (or injected) code. The
+        validation guard substitutes XY and repr-quotes the rejected value into a
+        single-line comment, so the output must remain compilable.
+        """
+        import ast
+
+        malicious_plane = "XY') or __import__('os"
+        sequence = [
+            (CADCommandType.SKETCH_START, {"plane": malicious_plane}),
+            (CADCommandType.CIRCLE, {"cx": 0, "cy": 0, "r": 10}),
+            (CADCommandType.SKETCH_END, {}),
+        ]
+        python_code = sequence_to_python(sequence)
+
+        # The injected expression never lands in an executable statement.
+        assert "result = result.workplane('XY')" in python_code
+        assert "or __import__" not in "\n".join(
+            line for line in python_code.splitlines() if not line.lstrip().startswith("#")
+        )
+        # Emitted code must still parse as valid Python.
+        ast.parse(python_code)
 
 
 @pytest.mark.integration

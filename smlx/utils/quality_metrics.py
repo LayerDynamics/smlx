@@ -142,7 +142,7 @@ def calculate_perplexity(
 
         if len(tokens) <= context_len:
             logger.warning("Text is too short for perplexity calculation")
-            return float("inf")
+            return math.inf
 
         # Convert to MLX array
         tokens_mx = mx.array(tokens)[None, :]  # Add batch dimension
@@ -161,7 +161,7 @@ def calculate_perplexity(
         # undefined, so report infinity rather than reducing over an empty array.
         if shift_logits.shape[1] == 0:
             logger.warning("Sequence too short for perplexity (need >1 token)")
-            return float("inf")
+            return math.inf
 
         # Calculate log probabilities. MLX core has no `mx.log_softmax`, so
         # compute it stably as logits - logsumexp(logits).
@@ -186,9 +186,18 @@ def calculate_perplexity(
 
         return perplexity
 
-    except Exception as e:
+    except (ValueError, IndexError, RuntimeError, ArithmeticError) as e:
+        # Narrow to the failure modes a valid-but-unscorable input can produce:
+        #   - ValueError:      tokenizer rejects the text / MLX shape mismatch
+        #                      (UnicodeError is a ValueError subclass)
+        #   - IndexError:      gather/indexing on a degenerate token sequence
+        #   - RuntimeError:    MLX evaluation/runtime failure
+        #   - ArithmeticError: OverflowError/FloatingPointError converting exp(nll)
+        # Programmer/usage errors (AttributeError, TypeError, NameError, ImportError,
+        # KeyError) are NOT caught here so a broken model/tokenizer surfaces loudly
+        # instead of masquerading as "infinite perplexity".
         logger.error(f"Failed to calculate perplexity: {e}")
-        return float("inf")
+        return math.inf
 
 
 def calculate_entropy(logits: mx.array, temperature: float = 1.0) -> float:
@@ -532,11 +541,69 @@ def _quality_goodness(m: QualityMetrics) -> float:
     return sum(parts) / len(parts) if parts else 0.0
 
 
+@dataclass
+class QualityComparison:
+    """
+    Result of comparing two :class:`QualityMetrics` sets.
+
+    A typed, self-describing comparison verdict (e.g. before/after
+    quantization). Read the outcome via the explicit boolean properties
+    (:attr:`similar`, :attr:`first_better`, :attr:`second_better`,
+    :attr:`identical`) or the raw :attr:`verdict` string.
+
+    Attributes:
+        goodness_first: Aggregate goodness score of the first metric set.
+        goodness_second: Aggregate goodness score of the second metric set.
+        difference: ``goodness_first - goodness_second`` (positive ⇒ first wins).
+        degradations: Human-readable descriptions of regressions in the second set.
+        improvements: Human-readable descriptions of gains in the second set.
+        acceptable: ``True`` when there are no degradations beyond tolerance.
+        verdict: One of ``"first_better"``, ``"second_better"``, ``"similar"``.
+        perplexity_change: Signed relative perplexity change (second vs first),
+            or ``None`` when either set lacks a perplexity score.
+        repetition_change: Signed absolute 3-gram repetition change, or ``None``
+            when either set lacks a repetition score.
+        diversity_change: Signed relative unique-token-ratio change, or ``None``
+            when either set lacks a token-diversity score.
+    """
+
+    goodness_first: float
+    goodness_second: float
+    difference: float
+    degradations: list[str]
+    improvements: list[str]
+    acceptable: bool
+    verdict: str
+    perplexity_change: Optional[float] = None
+    repetition_change: Optional[float] = None
+    diversity_change: Optional[float] = None
+
+    @property
+    def similar(self) -> bool:
+        """The two sets are equivalent within tolerance."""
+        return self.verdict == "similar"
+
+    @property
+    def first_better(self) -> bool:
+        """The first set wins beyond tolerance."""
+        return self.verdict == "first_better"
+
+    @property
+    def second_better(self) -> bool:
+        """The second set wins beyond tolerance."""
+        return self.verdict == "second_better"
+
+    @property
+    def identical(self) -> bool:
+        """The two sets scored exactly the same goodness."""
+        return self.similar and self.goodness_first == self.goodness_second
+
+
 def compare_quality(
     metrics1: QualityMetrics,
     metrics2: QualityMetrics,
     tolerance: float = 0.1,
-) -> dict[str, Any]:
+) -> QualityComparison:
     """
     Compare two quality metric sets (e.g., before/after quantization).
 
@@ -546,18 +613,18 @@ def compare_quality(
         tolerance: Acceptable degradation ratio / goodness gap (0.1 = 10%).
 
     Returns:
-        A dict describing the comparison. Always contains ``acceptable`` (bool),
-        ``degradations`` / ``improvements`` (lists), the per-set ``goodness``
-        scores, and a ``verdict`` string. It additionally carries the verdict as
-        membership keys — ``"better"``/``"worse"`` when one set wins, or
-        ``"similar"``/``"identical"``/``"same"`` when they are equivalent — so
-        callers can write ``"better" in result`` as well as ``result["acceptable"]``.
+        A :class:`QualityComparison`. Inspect the outcome via its boolean
+        properties (``.similar`` / ``.first_better`` / ``.second_better`` /
+        ``.identical``) or the ``.verdict`` string, and read ``.acceptable``,
+        ``.degradations`` / ``.improvements``, the per-set ``.goodness_first`` /
+        ``.goodness_second`` scores, and the per-metric ``.perplexity_change`` /
+        ``.repetition_change`` / ``.diversity_change`` deltas.
 
     Example:
         >>> original_metrics = assess_quality(model_fp16, tokenizer, text)
         >>> quant_metrics = assess_quality(model_4bit, tokenizer, text)
         >>> comparison = compare_quality(original_metrics, quant_metrics)
-        >>> assert comparison["acceptable"]
+        >>> assert comparison.acceptable
     """
     g1 = _quality_goodness(metrics1)
     g2 = _quality_goodness(metrics2)
@@ -565,68 +632,70 @@ def compare_quality(
 
     degradations: list[str] = []
     improvements: list[str] = []
+    perplexity_change: Optional[float] = None
+    repetition_change: Optional[float] = None
+    diversity_change: Optional[float] = None
 
-    # Perplexity (lower is better)
-    if metrics1.perplexity and metrics2.perplexity:
-        ppl_change = (metrics2.perplexity - metrics1.perplexity) / metrics1.perplexity
-        if ppl_change > tolerance:
+    # Perplexity (lower is better). Require both scores to be finite: a failed
+    # perplexity calculation returns ``math.inf`` (truthy), and ``(inf - inf) /
+    # inf`` would otherwise yield a ``nan`` change rather than "uncomparable".
+    if (
+        metrics1.perplexity
+        and metrics2.perplexity
+        and math.isfinite(metrics1.perplexity)
+        and math.isfinite(metrics2.perplexity)
+    ):
+        perplexity_change = (metrics2.perplexity - metrics1.perplexity) / metrics1.perplexity
+        if perplexity_change > tolerance:
             degradations.append(
-                f"Perplexity increased {ppl_change:.1%} "
+                f"Perplexity increased {perplexity_change:.1%} "
                 f"({metrics1.perplexity:.1f} -> {metrics2.perplexity:.1f})"
             )
-        elif ppl_change < -tolerance:
-            improvements.append(f"Perplexity decreased {abs(ppl_change):.1%}")
+        elif perplexity_change < -tolerance:
+            improvements.append(f"Perplexity decreased {abs(perplexity_change):.1%}")
 
     # Repetition (lower is better)
     if metrics1.repetition_3gram is not None and metrics2.repetition_3gram is not None:
-        rep_change = metrics2.repetition_3gram - metrics1.repetition_3gram
-        if rep_change > tolerance:
-            degradations.append(f"Repetition increased {rep_change:.1%}")
-        elif rep_change < -tolerance:
-            improvements.append(f"Repetition decreased {abs(rep_change):.1%}")
+        repetition_change = metrics2.repetition_3gram - metrics1.repetition_3gram
+        if repetition_change > tolerance:
+            degradations.append(f"Repetition increased {repetition_change:.1%}")
+        elif repetition_change < -tolerance:
+            improvements.append(f"Repetition decreased {abs(repetition_change):.1%}")
 
     # Token diversity (higher is better)
     if metrics1.unique_token_ratio and metrics2.unique_token_ratio:
-        div_change = (
+        diversity_change = (
             metrics2.unique_token_ratio - metrics1.unique_token_ratio
         ) / metrics1.unique_token_ratio
-        if div_change < -tolerance:
-            degradations.append(f"Token diversity decreased {abs(div_change):.1%}")
-        elif div_change > tolerance:
-            improvements.append(f"Token diversity increased {div_change:.1%}")
+        if diversity_change < -tolerance:
+            degradations.append(f"Token diversity decreased {abs(diversity_change):.1%}")
+        elif diversity_change > tolerance:
+            improvements.append(f"Token diversity increased {diversity_change:.1%}")
 
-    result: dict[str, Any] = {
-        "goodness_first": g1,
-        "goodness_second": g2,
-        "difference": diff,
-        "degradations": degradations,
-        "improvements": improvements,
-        "acceptable": len(degradations) == 0,
-    }
-
-    # Encode the verdict both as a string and as membership keys so callers can
-    # use either ``result["acceptable"]`` (dict access) or ``"better" in result``
-    # (key membership) styles.
     if abs(diff) < tolerance:
-        result["verdict"] = "similar"
-        result["similar"] = True
-        if g1 == g2:
-            result["identical"] = True
-            result["same"] = True
+        verdict = "similar"
     elif diff > 0:
-        result["verdict"] = "first_better"
-        result["better"] = "first"
-        result["worse"] = "second"
+        verdict = "first_better"
     else:
-        result["verdict"] = "second_better"
-        result["better"] = "second"
-        result["worse"] = "first"
+        verdict = "second_better"
 
-    return result
+    return QualityComparison(
+        goodness_first=g1,
+        goodness_second=g2,
+        difference=diff,
+        degradations=degradations,
+        improvements=improvements,
+        acceptable=len(degradations) == 0,
+        verdict=verdict,
+        perplexity_change=perplexity_change,
+        repetition_change=repetition_change,
+        diversity_change=diversity_change,
+    )
 
 
 __all__ = [
     "QualityMetrics",
+    "QualityComparison",
     "calculate_perplexity",
     "calculate_entropy",
     "analyze_repetition",

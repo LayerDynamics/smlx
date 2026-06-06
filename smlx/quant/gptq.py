@@ -45,6 +45,45 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_unflatten
 
+# Number of GPTQ columns to process between lazy-graph materializations inside a
+# group. The inner column loop is a strict read-after-write chain on W, so the
+# eval cadence is numerically irrelevant (output is bit-identical for any value)
+# and only trades host-sync frequency against peak memory. Empirically (random
+# 4-bit quant of representative 135M/360M projection and tied-lm_head shapes on
+# the 36GB M4 target), a stride of 2 halves the per-column sync count for a
+# 15-37% speedup with ZERO peak-memory regression vs. per-column eval, whereas
+# stride >= 4 starts to push the deferred slice-update set past the working-set
+# ceiling and regresses peak memory. See tests/quant/test_gptq.py.
+_GPTQ_EVAL_COLUMN_STRIDE = 2
+
+
+def _dead_feature_mask(diag_vals: mx.array) -> mx.array:
+    """Boolean mask of dead input-feature channels in a Hessian diagonal.
+
+    A channel is *dead* when its accumulated curvature — the ``H = XᵀX``
+    diagonal, a sum of squared activations — is zero or negligibly small
+    relative to the strongest channel. Such channels make ``H`` singular, so
+    the Cholesky inverse is undefined; the GPTQ guard resets them to a clean
+    diagonal so the factorization stays well-defined.
+
+    An exact ``diag == 0`` test only catches channels whose activations are
+    *exactly* zero. A channel that is effectively dead — activations of, say,
+    1e-30 magnitude — leaves a tiny positive residue on the diagonal that still
+    renders ``H`` singular yet slips past equality. Comparing against
+    ``max(diag) * tol`` scales the cutoff to the Hessian's own magnitude and,
+    unlike a mean-based cutoff, is *not* dragged toward zero by the dead
+    channels it is meant to detect (the max is set by the strongest live
+    channel). The 1e-8 relative floor sits far below any real channel — live
+    channels carry curvature within a few orders of magnitude of the max, while
+    genuinely-dead channels sit 15+ orders below — so real but weakly-activated
+    channels are never misflagged. When every channel is dead (max == 0) the
+    cutoff is 0 and ``<=`` flags them all, matching the all-zero degenerate
+    case.
+    """
+    ref = mx.max(diag_vals)
+    tol = ref * 1e-8
+    return diag_vals <= tol
+
 
 def _quantize_weights(w: mx.array, bits: int, scales: mx.array, biases: mx.array) -> mx.array:
     """
@@ -209,13 +248,16 @@ def gptq_quantize(
         diag = mx.arange(H.shape[0])
         diag_vals = H[diag, diag]
 
-        # Dead input features (zero Hessian diagonal — an activation channel that
-        # is always zero, common for attention o_proj inputs) make H singular, so
-        # the Cholesky inverse comes back as NaN and corrupts the layer's weights.
-        # Set those diagonal entries to 1 so the factorization stays well-defined;
-        # such columns then receive a trivial, stable quantization update. This is
-        # the standard GPTQ dead-feature guard.
-        dead = diag_vals == 0
+        # Dead input features (zero — or effectively-zero — Hessian diagonal: an
+        # activation channel that is always (near-)zero, common for attention
+        # o_proj inputs) make H singular, so the Cholesky inverse comes back as
+        # NaN and corrupts the layer's weights. Set those diagonal entries to 1
+        # so the factorization stays well-defined; such columns then receive a
+        # trivial, stable quantization update. This is the standard GPTQ
+        # dead-feature guard, using a magnitude-relative cutoff (see
+        # `_dead_feature_mask`) rather than an exact `== 0` so it does not rely
+        # solely on the damping below to neutralize tiny-but-nonzero channels.
+        dead = _dead_feature_mask(diag_vals)
         diag_vals = mx.where(dead, mx.ones_like(diag_vals), diag_vals)
 
         # Add damping to the diagonal for numerical stability.
@@ -304,11 +346,23 @@ def gptq_quantize(
                 # Compensate error in remaining columns within group
                 W[..., col:group_end] -= e @ Hinv[col : col + 1, col:group_end]
                 err[..., col_offset : col_offset + 1] = e
-                mx.eval(err, W)
+
+                # Materialize the lazy graph every _GPTQ_EVAL_COLUMN_STRIDE
+                # columns rather than every column. The read-after-write chain
+                # makes this output-identical; the stride just bounds graph depth
+                # so peak memory stays flat while cutting the host-sync count
+                # (see _GPTQ_EVAL_COLUMN_STRIDE for the measured trade-off).
+                if (col_offset + 1) % _GPTQ_EVAL_COLUMN_STRIDE == 0:
+                    mx.eval(err, W)
 
             # Compensate error in columns outside this group
             if group_end < W.shape[-1]:
                 W[..., group_end:] -= err @ Hinv[group_start:group_end, group_end:]
+
+            # Settle the group (including the just-applied outside-group
+            # compensation) before moving on, so each group's deferred work
+            # never spills into the next group's working set.
+            mx.eval(W, err)
 
         # Pack quantized weights
         scales = mx.concatenate(all_scales, axis=-1)

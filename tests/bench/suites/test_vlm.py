@@ -4,19 +4,20 @@ Tests for vision-language model benchmark suite.
 Tests the VLM benchmarking functions.
 """
 
-import pytest
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from PIL import Image
-import numpy as np
 
+import numpy as np
+import pytest
+from PIL import Image
+
+from smlx.bench.stats import ModelBenchmarkStats
 from smlx.bench.suites.vlm import (
     VLMBenchmarkConfig,
     benchmark_vlm,
     benchmark_vlm_batch,
 )
-from smlx.bench.stats import ModelBenchmarkStats
-
 
 # Mock classes for testing
 
@@ -205,6 +206,48 @@ class TestBenchmarkVLM:
 
             assert isinstance(stats, ModelBenchmarkStats)
 
+    def test_prompt_tps_is_not_fabricated(self):
+        """Regression: prompt_tps must not be a meaningless ~1e9 tok/s value.
+
+        Previously benchmark_vlm bracketed an empty block with two
+        ``perf_counter()`` calls, so ``prompt_time`` was ~0 and
+        ``prompt_tps = prompt_tokens / ~0`` came back as ~1.5e9 tok/s -- a
+        fabricated number. The prefill phase is not separately measurable through
+        the opaque ``generate(...) -> str`` interface, so ``prompt_time`` is left
+        at 0.0 and ``create_model_stats`` reports ``prompt_tps`` as the 0.0
+        "not measured" sentinel rather than dividing by a ~0 interval.
+        """
+        img = create_test_image()
+        model = MockVLMModel()
+        processor = MockProcessor()
+
+        stats = benchmark_vlm(
+            model=model,
+            processor=processor,
+            image=img,
+            prompt="Describe this image.",
+            config=VLMBenchmarkConfig(max_tokens=10),
+        )
+
+        # Prefill is unmeasured through the opaque interface -> honest 0.0 sentinel,
+        # never a fabricated throughput.
+        assert stats.prompt_time == 0.0
+        assert stats.prompt_tps == 0.0
+        # Unconditional sanity guard: the old bug produced ~1.5e9 tok/s. No real
+        # prefill on an M4 processes prompt tokens anywhere near this fast, so any
+        # value this large means a near-zero interval was divided into again.
+        assert stats.prompt_tps < 1e6
+        assert math.isfinite(stats.prompt_tps)
+
+        # The generation interval IS a real measurement (it wraps the actual
+        # _generate_vlm call), so it must be positive and finite. We do NOT bound
+        # its magnitude here: the mock does no real compute, so its honest tok/s is
+        # arbitrarily high -- unlike the prompt bug, that is a real interval, not a
+        # fabricated division by an empty block.
+        assert stats.generation_time > 0.0
+        assert stats.generation_tokens > 0
+        assert math.isfinite(stats.generation_tps)
+
 
 @pytest.mark.unit
 class TestBenchmarkVLMBatch:
@@ -330,6 +373,9 @@ class TestVLMPerformance:
             with Image.open(img_path) as loaded:
                 load_time = time.perf_counter() - start
 
+                # The decoded image must round-trip to the size we saved.
+                assert loaded.size == (1024, 1024)
+
                 # Should be fast (< 100ms for 1024x1024)
                 assert load_time < 0.1
 
@@ -342,6 +388,9 @@ class TestVLMPerformance:
         start = time.perf_counter()
         resized = img.resize((224, 224))
         resize_time = time.perf_counter() - start
+
+        # The resize must actually produce the requested target dimensions.
+        assert resized.size == (224, 224)
 
         # Should be fast
         assert resize_time < 0.1

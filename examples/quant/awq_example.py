@@ -17,14 +17,22 @@ AWQ is ideal for:
 - Production deployments
 """
 
-import mlx.core as mx
 import time
 
-from smlx.models.SmolLM2_135M import load, generate
+import mlx.core as mx
+
+from smlx.models.SmolLM2_135M import generate, load
 from smlx.quant import awq_quantize
 from smlx.quant.utils import load_calibration_data
-from smlx.utils.quality_metrics import assess_quality, compare_quality, calculate_perplexity
+from smlx.utils.quality_metrics import assess_quality, calculate_perplexity, compare_quality
 from smlx.utils.validation import validate_text_output
+
+# Held-out reference text scored by every model variant so AWQ's language-modeling
+# impact is measured on identical tokens, independent of each model's generations.
+REFERENCE_TEXT = (
+    "Activation-aware weight quantization protects the most salient channels so a "
+    "compressed model keeps predicting natural language with low perplexity."
+)
 
 
 def main():
@@ -90,7 +98,21 @@ def main():
         group_size=64,
     )
 
+    # MLX builds the quantized-weight graph lazily; force materialization now so
+    # AWQ's compute is not folded into the first timed generation below.
+    mx.eval(quantized_model.parameters())
     print("   ✅ AWQ quantization complete!")
+
+    # Reference perplexity: score FP16 and AWQ-4bit on the SAME held-out text to
+    # measure the language-modeling impact directly (lower = better).
+    ref_ppl_fp16 = calculate_perplexity(model, tokenizer, REFERENCE_TEXT)
+    ref_ppl_awq = calculate_perplexity(quantized_model, tokenizer, REFERENCE_TEXT)
+    ref_ppl_delta = (
+        (ref_ppl_awq - ref_ppl_fp16) / ref_ppl_fp16 if ref_ppl_fp16 > 0 else float("inf")
+    )
+    print("   Reference-text perplexity:")
+    print(f"     FP16:      {ref_ppl_fp16:.2f}")
+    print(f"     AWQ 4-bit: {ref_ppl_awq:.2f} ({ref_ppl_delta:+.1%})")
 
     # Test quantized model
     print("\n5. AWQ-Quantized (4-bit) Performance:")
@@ -128,6 +150,9 @@ def main():
     print("\n6. Quality Degradation Analysis:")
     print("   Comparing FP16 vs AWQ-4bit quality metrics:\n")
 
+    def _pct(value):
+        return f"{value:+.1%}" if value is not None else "n/a"
+
     quality_degradations = []
     for i, (fp16_q, awq_q) in enumerate(zip(fp16_quality_metrics, awq_quality_metrics), 1):
         comparison = compare_quality(fp16_q, awq_q, tolerance=0.20)
@@ -135,17 +160,17 @@ def main():
 
         print(f"   Prompt {i}:")
         print(f"     Perplexity:  {fp16_q.perplexity:.1f} → {awq_q.perplexity:.1f} "
-              f"({comparison['perplexity_change']:+.1%})")
+              f"({_pct(comparison.perplexity_change)})")
         print(f"     Repetition:  {fp16_q.repetition_3gram:.2%} → {awq_q.repetition_3gram:.2%} "
-              f"({comparison['repetition_change']:+.1%})")
+              f"({_pct(comparison.repetition_change)})")
         print(f"     Diversity:   {fp16_q.diversity_score:.2f} → {awq_q.diversity_score:.2f}")
-        print(f"     Acceptable:  {'✅ Yes' if comparison['acceptable'] else '❌ No'}")
-        if not comparison['acceptable']:
-            print(f"     Issues: {', '.join(comparison['degradations'])}")
+        print(f"     Acceptable:  {'✅ Yes' if comparison.acceptable else '❌ No'}")
+        if not comparison.acceptable:
+            print(f"     Issues: {', '.join(comparison.degradations)}")
         print()
 
     # Overall quality summary
-    acceptable_count = sum(1 for c in quality_degradations if c['acceptable'])
+    acceptable_count = sum(1 for c in quality_degradations if c.acceptable)
     print(f"   Overall: {acceptable_count}/{len(quality_degradations)} prompts passed quality threshold")
 
     # Compare AWQ vs standard quantization

@@ -12,21 +12,22 @@ A 1.5B parameter multimodal model combining:
 
 import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
 
-from .config import ModelConfig
-from .vision import VisionModel
-from .language import TinyLlamaModel
-from .connector import build_projector
 from smlx.utils.cache import KVCache
 from smlx.utils.vlm_diagnostics import (
     log_embedding_comparison,
     log_logits_distribution,
     log_vision_features,
 )
+
+from .config import ModelConfig
+from .connector import build_projector
+from .language import TinyLlamaModel
+from .vision import VisionModel
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +124,22 @@ class TinyLLaVA(nn.Module):
         input_ids: mx.array,
         pixel_values: Optional[mx.array] = None,
         image_features: Optional[mx.array] = None,
-    ) -> Tuple[mx.array, Optional[mx.array]]:
+    ) -> tuple[mx.array, Optional[mx.array]]:
         """Prepare inputs using token injection to replace <image> tokens.
+
+        Each <image> placeholder token is replaced, in order, by the patch
+        features of its corresponding image. Supports any batch size: every row
+        is spliced independently and images are assigned to rows in order (row b
+        consumes the next ``count_of_<image>_tokens_in_row_b`` images). All rows
+        in a batched call must contain the same number of <image> tokens — a
+        ragged batch (differing counts) raises ``ValueError`` because the rows
+        would expand to different lengths and cannot share one dense tensor.
 
         Args:
             input_ids: Text token IDs [B, seq_len] containing <image> token(s)
-            pixel_values: Optional image tensor [B, H, W, C]
-            image_features: Pre-computed image features [B, num_patches, hidden_size]
+            pixel_values: Optional image tensor [num_images, H, W, C]
+            image_features: Pre-computed image features
+                [num_images, num_patches, hidden_size]
 
         Returns:
             Tuple of (combined_embeddings, image_features)
@@ -145,52 +155,78 @@ class TinyLLaVA(nn.Module):
         if image_features is None:
             return text_embeddings, None
 
-        # Token injection: replace <image> token embeddings with vision features
-        # LLaVA approach: find positions of IMAGE_TOKEN_INDEX and inject features
+        # Token injection: replace each <image> placeholder token's embedding with
+        # the patch features of its corresponding image. Works for any batch size:
+        # each row is spliced independently and the rows are stacked back together.
         import numpy as np
 
-        # Find image token positions (assuming batch size is 1)
         image_token_index = self.config.image_token_index
-        image_positions = np.where(input_ids == image_token_index)[1].tolist()
+        # np.where on a rectangular [B, S] array gives (row_indices, col_indices);
+        # group the column positions per row instead of flattening across the batch.
+        ids_np = np.array(input_ids)
+        rows, cols = np.where(ids_np == image_token_index)
 
-        if not image_positions:
-            # No image tokens found, return text only
+        if rows.size == 0:
+            # No image tokens found in any row, return text only.
             return text_embeddings, image_features
 
-        # One <image> placeholder token is replaced by that image's patch
-        # features, so the number of images must match the number of tokens.
+        batch_size = text_embeddings.shape[0]
+        positions_per_row = [
+            sorted(cols[rows == b].tolist()) for b in range(batch_size)
+        ]
+        counts_per_row = [len(p) for p in positions_per_row]
+
+        # One <image> placeholder maps to exactly one image, so the total number of
+        # placeholders across the batch must equal the number of images supplied.
         num_images = image_features.shape[0]
+        total_tokens = sum(counts_per_row)
+        if total_tokens != num_images:
+            raise ValueError(
+                f"Number of <image> tokens ({total_tokens}) does not match "
+                f"the number of images ({num_images}); each <image> placeholder must "
+                f"correspond to exactly one image."
+            )
+
+        # Each row expands to S - n_img + n_img * num_patches tokens. Because
+        # input_ids is rectangular (every row has the same S), the rows only end up
+        # the same length when every row has the same <image>-token count. Differing
+        # counts produce a ragged batch that cannot be packed into one dense tensor
+        # without a per-row padding mask (which this forward path does not thread),
+        # so reject it loudly rather than silently mis-aligning rows.
+        if batch_size > 1 and len(set(counts_per_row)) > 1:
+            raise ValueError(
+                "Ragged image batch: rows have differing <image>-token counts "
+                f"({counts_per_row}). A batched forward pass requires every row to "
+                "contain the same number of <image> tokens; run uneven rows "
+                "separately."
+            )
 
         if DEBUG:
             log_embedding_comparison(
                 image_features, text_embeddings, label="tinyllava_vision_vs_text_embeds"
             )
 
-        # Inject image features at token positions
-        # This replaces the single <image> token with num_patches features
-        # Strategy: split text embeddings and insert image features
-
-        # Replace each <image> token (in order) with its image's patch features.
-        # Handles one or many images; each <image> placeholder maps to one image.
-        if len(image_positions) != num_images:
-            raise ValueError(
-                f"Number of <image> tokens ({len(image_positions)}) does not match "
-                f"the number of images ({num_images}); each <image> placeholder must "
-                f"correspond to exactly one image."
-            )
-
+        # Images are assigned to rows in order: row b consumes the next
+        # counts_per_row[b] entries from image_features.
         feats = image_features.astype(text_embeddings.dtype)
-        segments = []
-        prev = 0
-        for img_idx, pos in enumerate(sorted(image_positions)):
-            # Text tokens up to (not including) this <image> placeholder.
-            segments.append(text_embeddings[:, prev:pos, :])
-            # This image's patch embeddings: (1, num_patches, hidden_size).
-            segments.append(feats[img_idx : img_idx + 1])
-            prev = pos + 1  # Skip the <image> token itself.
-        # Trailing text after the last <image> token.
-        segments.append(text_embeddings[:, prev:, :])
-        combined_embeddings = mx.concatenate(segments, axis=1)
+        row_embeddings = []
+        img_idx = 0
+        for b in range(batch_size):
+            segments = []
+            prev = 0
+            for pos in positions_per_row[b]:
+                # Text tokens up to (not including) this <image> placeholder.
+                segments.append(text_embeddings[b : b + 1, prev:pos, :])
+                # This image's patch embeddings: (1, num_patches, hidden_size).
+                segments.append(feats[img_idx : img_idx + 1])
+                img_idx += 1
+                prev = pos + 1  # Skip the <image> token itself.
+            # Trailing text after the last <image> token in this row.
+            segments.append(text_embeddings[b : b + 1, prev:, :])
+            row_embeddings.append(mx.concatenate(segments, axis=1))
+
+        # All rows share the same length here (enforced above), so stacking is safe.
+        combined_embeddings = mx.concatenate(row_embeddings, axis=0)
 
         return combined_embeddings, image_features
 
@@ -200,8 +236,8 @@ class TinyLLaVA(nn.Module):
         pixel_values: Optional[mx.array] = None,
         image_features: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
-        cache: Optional[list] = None,
-    ) -> Tuple[mx.array, Optional[mx.array]]:
+        cache: Optional[list[KVCache]] = None,
+    ) -> tuple[mx.array, Optional[mx.array]]:
         """Forward pass.
 
         Args:

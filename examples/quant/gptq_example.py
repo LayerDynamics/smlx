@@ -17,14 +17,23 @@ GPTQ is ideal for:
 - Memory-constrained environments (M4 with 36GB unified memory)
 """
 
-import mlx.core as mx
 import time
 
-from smlx.models.SmolLM2_135M import load, generate
+import mlx.core as mx
+
+from smlx.models.SmolLM2_135M import generate, load
 from smlx.quant import gptq_quantize
 from smlx.quant.utils import load_calibration_data
-from smlx.utils.quality_metrics import assess_quality, compare_quality, calculate_perplexity
+from smlx.utils.quality_metrics import assess_quality, calculate_perplexity, compare_quality
 from smlx.utils.validation import validate_text_output
+
+# Held-out reference text used to measure each model's language-modeling perplexity
+# directly (independent of what the model happens to generate), so FP16 and the
+# quantized variant are scored on the exact same tokens.
+REFERENCE_TEXT = (
+    "Quantization reduces a model's memory footprint by storing weights at lower "
+    "numerical precision while aiming to preserve its predictive quality."
+)
 
 
 def main():
@@ -86,10 +95,14 @@ def main():
         group_size=64,  # Optimized for M4
     )
 
+    # MLX is lazy: gptq_quantize builds the quantized-weight graph but does not
+    # materialize it until something forces evaluation. Force it here so the
+    # quantization cost is not silently folded into the first timed generation.
+    mx.eval(quantized_model.parameters())
     print("   ✅ Quantization complete!")
 
     # Check quantized size (approximate - actual is ~1/4 of original)
-    print(f"   Expected compression: ~4x (from FP16 to 4-bit)")
+    print("   Expected compression: ~4x (from FP16 to 4-bit)")
     print(f"   Estimated quantized size: ~{original_params // 4:,} effective params")
 
     # Generate with quantized model
@@ -123,21 +136,38 @@ def main():
     # Compare results
     print("\n6. Performance Comparison:")
     print(f"   Speed improvement: {original_time / quantized_time:.2f}x faster")
-    print(f"   Memory reduction: ~4x smaller")
+    print("   Memory reduction: ~4x smaller")
+
+    # Reference perplexity: score both models on the SAME held-out text so the
+    # language-modeling impact of quantization is measured directly rather than
+    # inferred from each model's (differing) own generations.
+    print("\n6b. Reference-text perplexity (lower = better):")
+    ref_ppl_original = calculate_perplexity(model, tokenizer, REFERENCE_TEXT)
+    ref_ppl_quantized = calculate_perplexity(quantized_model, tokenizer, REFERENCE_TEXT)
+    ref_ppl_delta = (
+        (ref_ppl_quantized - ref_ppl_original) / ref_ppl_original
+        if ref_ppl_original > 0
+        else float("inf")
+    )
+    print(f"   FP16:       {ref_ppl_original:.2f}")
+    print(f"   GPTQ 4-bit: {ref_ppl_quantized:.2f} ({ref_ppl_delta:+.1%})")
 
     # Quality degradation analysis
     print("\n7. Quality Degradation Analysis:")
     comparison = compare_quality(original_quality, quantized_quality, tolerance=0.20)
 
+    def _pct(value):
+        return f"{value:+.1%}" if value is not None else "n/a"
+
     print(f"   Perplexity:  {original_quality.perplexity:.1f} → {quantized_quality.perplexity:.1f} "
-          f"({comparison['perplexity_change']:+.1%})")
+          f"({_pct(comparison.perplexity_change)})")
     print(f"   Repetition:  {original_quality.repetition_3gram:.2%} → {quantized_quality.repetition_3gram:.2%} "
-          f"({comparison['repetition_change']:+.1%})")
+          f"({_pct(comparison.repetition_change)})")
     print(f"   Diversity:   {original_quality.diversity_score:.2f} → {quantized_quality.diversity_score:.2f}")
     print(f"   Unique Ratio: {original_quality.unique_token_ratio:.2%} → {quantized_quality.unique_token_ratio:.2%}")
-    print(f"   Acceptable:  {'✅ Yes' if comparison['acceptable'] else '❌ No'}")
-    if not comparison['acceptable']:
-        print(f"   Issues: {', '.join(comparison['degradations'])}")
+    print(f"   Acceptable:  {'✅ Yes' if comparison.acceptable else '❌ No'}")
+    if not comparison.acceptable:
+        print(f"   Issues: {', '.join(comparison.degradations)}")
 
     # Test different bit widths
     print("\n8. Testing different quantization levels...")

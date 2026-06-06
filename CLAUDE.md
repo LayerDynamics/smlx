@@ -42,14 +42,21 @@ defects remain from this audit.
   degrades to plain per-group quant instead of NaN). GPTQ now generates coherent
   text. Guarded by `tests/quant/test_gptq.py::TestGPTQDeadFeatures` (unit) and
   `test_output_quality.py::test_gptq_no_gibberish` (real-model, FP-gated).
-- [x] **TinyLLaVA multiple image tokens.** `smlx/models/TinyLLaVA/model.py`
-  `prepare_inputs_for_generation` now replaces each `<image>` token, in order, with
-  its own image's patch features (handles 1 or N images), validates that the number
-  of `<image>` tokens equals the number of images, and drops the dead
-  `reshaped_image_features`. Covered by `tests/models/test_tinyllava.py::
-  TestImageTokenMerge`. (By-design: `loader.py:84` `FIXME` is a real upstream
-  config/weights mismatch — HF config says 27 vision layers, weights have 26 — and is
-  handled correctly.)
+- [x] **TinyLLaVA multiple image tokens (now batch-correct).** `smlx/models/TinyLLaVA/model.py`
+  `prepare_inputs_for_generation` replaces each `<image>` token, in order, with its
+  own image's patch features (handles 1 or N images) and validates that the total
+  number of `<image>` tokens equals the number of images. The earlier
+  `np.where(...)[1]` flattened column positions across the batch, so it was correct
+  only for batch size 1; it now groups positions **per row**, assigns images to rows
+  in order, and splices each row independently before stacking, so batched prompts
+  with images inject correctly. A ragged batch (rows with differing `<image>`-token
+  counts → unequal expanded lengths) raises `ValueError` rather than silently
+  mis-aligning, since the forward path threads no per-row padding mask. Note: the
+  `generate()` decode loop is still single-sequence (`generate.py:284`); this fix
+  covers the prompt-stage merge, not batched token-by-token decoding. Covered by
+  `tests/models/test_tinyllava.py::TestImageTokenMerge`. (By-design: `loader.py:84`
+  `FIXME` is a real upstream config/weights mismatch — HF config says 27 vision
+  layers, weights have 26 — and is handled correctly.)
 - [x] **Bench VLM path.** `smlx/bench/suites/vlm.py` gained a documented generic
   generation path (`model.generate(prompt, image, max_tokens, temperature) -> str`)
   so any model (incl. test doubles) can be benchmarked, not only the 4 built-in
@@ -72,6 +79,21 @@ defects remain from this audit.
   layers directly with `mask=None`, so SDPA applied no masking (text attended to future
   tokens). `model.py` now builds a causal mask (with image↔image bidirectional blocks,
   image positions found from `input_ids`) via the previously-dead `create_attention_mask`.
+- [x] **nanoVLM generation re-ran the full forward each step AND dropped the image after
+  token 0.** `smlx/models/nanoVLM/generate.py` `generate`/`stream_generate` rebuilt the
+  whole `input_ids` and re-ran the entire forward every step (O(N³) over N tokens) while
+  setting `pixel_values=None` after the first token — so from token 1 on the `49150` image
+  markers were embedded as plain text and the attention fell back to a pure causal mask,
+  silently dropping the image. The model + SmolLM2 layers already accepted `cache=` but the
+  loop never used it (unlike every sibling VLM, which already prefill+cache). Now builds a
+  per-layer KV cache (`smlx.utils.cache.make_cache`), prefills the prompt+image once, then
+  decodes single tokens against the cache — linear *and* image-conditioned for every token.
+  Numerically equivalent to a full re-forward that keeps the image (image-token K/V are
+  frozen at their prefill values). Guarded by `tests/models/test_nanovlm.py::
+  TestKVCacheGeneration` (text-only cache equivalence, image-influences-every-token, and a
+  generate()-level prefill→single-token-decode shape check). (Verified at unit level with
+  random-init models; the real-weights integration suite is `requires_model` and was not
+  run here.)
 - [x] **PyTorch `.bin` conversion implemented.** `smlx/tools/convert2mlx.py` previously
   raised `NotImplementedError` for `.bin`; it now loads the torch state_dict (sharded ok,
   bfloat16 upcast) and converts to MLX arrays.
