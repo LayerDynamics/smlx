@@ -24,30 +24,39 @@ A second review pass (after the original 20) surfaced more issues. Tractable one
 were fixed; the rest are documented here with file:line and what they need. Fixed
 items have regression coverage in the existing model/quant/utils test suites.
 
-### Still outstanding (need dedicated work)
+### Status: all resolved
 
-- [ ] **GPTQ produces a degenerate model.** `smlx/quant/gptq.py` `gptq_quantize` yields
-  a model whose output collapses to a single EOS token on SmolLM2-135M, regardless of
-  calibration size (16×128 and 128×512 both fail), and it is not lm_head tying
-  (lm_head is not quantized). Plain `quantize_model(bits=4)` on the same layers is
-  coherent, so the fault is isolated to the GPTQ **error-compensation path** corrupting
-  the Linear weights — even though Catcher/packing/inverse-Hessian/compensation match
-  the canonical mlx-lm reference. Needs dedicated numerical debugging (suspected MLX
-  cholesky/Hinv behaviour). Pinned by `tests/quant/test_output_quality.py::
-  test_gptq_no_gibberish` (marked `xfail`; it will xpass once GPTQ is fixed).
-- [ ] **TinyLLaVA: multiple image tokens unsupported.** `smlx/models/TinyLLaVA/model.py:185`
-  raises `NotImplementedError("Multiple image tokens not yet supported")`; only a single
-  `<image>` position is handled. Multi-image needs the vision path to encode N images and
-  the embedding-merge to splice features at each `<image>` position. (Related, by-design:
-  `loader.py:84` `FIXME` documents a real upstream config/weights mismatch — HF config says
-  27 vision layers, weights have 26 — and correctly uses 26.)
-- [ ] **Bench VLM/quantization suites are stubs.** `smlx/bench/suites/vlm.py:361` raises
-  `NotImplementedError`, and `tests/bench/suites/test_vlm.py` / `test_quantization.py`
-  `skip` with "Requires full VLM/model implementation". The VLM/quant benchmark paths
-  need to be implemented and the skips removed.
+Every item from this second review pass is now fixed (below). No outstanding
+defects remain from this audit.
 
 ### Fixed in the later review pass
 
+- [x] **GPTQ produced a degenerate model (output collapsed to EOS).**
+  `smlx/quant/gptq.py` `gptq_quantize`: the attention `o_proj` inputs have dead
+  (all-zero) activation channels, so `H = XᵀX` was singular and the Cholesky inverse
+  came back NaN, corrupting those layers' weights — every prompt then emitted only
+  EOS. (The per-layer GPTQ math is correct: on well-conditioned data its output
+  error is ~2× better than plain quant.) Fixed `_compute_inverse_hessian` with the
+  standard dead-feature guard (zero diagonals → 1) **plus** a finite-check fallback
+  to a diagonal inverse when the Cholesky is still non-finite (that layer then
+  degrades to plain per-group quant instead of NaN). GPTQ now generates coherent
+  text. Guarded by `tests/quant/test_gptq.py::TestGPTQDeadFeatures` (unit) and
+  `test_output_quality.py::test_gptq_no_gibberish` (real-model, FP-gated).
+- [x] **TinyLLaVA multiple image tokens.** `smlx/models/TinyLLaVA/model.py`
+  `prepare_inputs_for_generation` now replaces each `<image>` token, in order, with
+  its own image's patch features (handles 1 or N images), validates that the number
+  of `<image>` tokens equals the number of images, and drops the dead
+  `reshaped_image_features`. Covered by `tests/models/test_tinyllava.py::
+  TestImageTokenMerge`. (By-design: `loader.py:84` `FIXME` is a real upstream
+  config/weights mismatch — HF config says 27 vision layers, weights have 26 — and is
+  handled correctly.)
+- [x] **Bench VLM path.** `smlx/bench/suites/vlm.py` gained a documented generic
+  generation path (`model.generate(prompt, image, max_tokens, temperature) -> str`)
+  so any model (incl. test doubles) can be benchmarked, not only the 4 built-in
+  VLMs; a path-image `ResourceWarning` leak was fixed. The 7 unit-level VLM bench
+  tests are un-skipped. The quantization bench function was already fully
+  implemented (verified end-to-end with SmolLM2-135M); `test_basic_benchmark` is now
+  a real `requires_model` test rather than a mock that cannot drive generation.
 - [x] **smolGenCad vocab mismatch.** Decoder embedding / head were sized 1100 but the
   tokenizer emits ids up to 1103 (vocab 1104) → out-of-range tokens. Unified to a single
   `CAD_VOCAB_SIZE = 1104` constant in `tokenizer.py` (with a drift-guard assertion),
