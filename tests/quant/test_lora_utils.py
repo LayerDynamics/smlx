@@ -131,12 +131,7 @@ class TestApplyLoRA:
         model = SimpleModel()
 
         # Apply LoRA only to nn.Linear (default behavior)
-        lora_model = apply_lora(
-            model,
-            rank=8,
-            alpha=16.0,
-            target_modules=[nn.Linear]
-        )
+        lora_model = apply_lora(model, rank=8, alpha=16.0, target_modules=[nn.Linear])
 
         # All Linear layers should be converted
         assert isinstance(lora_model.fc1, LoRALinear)
@@ -218,11 +213,16 @@ class TestMergeLoRA:
         # Apply LoRA
         lora_model = apply_lora(model, rank=8, alpha=16.0)
 
-        # Simulate training by modifying LoRA weights
-        # (In real training, gradients would update these)
-        with mx.no_grad():
-            lora_model.fc1.lora_a.weight += mx.random.normal(lora_model.fc1.lora_a.weight.shape) * 0.01
-            lora_model.fc1.lora_b.weight += mx.random.normal(lora_model.fc1.lora_b.weight.shape) * 0.01
+        # Simulate training by modifying LoRA weights.
+        # lora_a / lora_b are raw mx.array parameters (not nn.Linear modules),
+        # so we update the arrays directly. MLX has no mx.no_grad(); plain
+        # assignment outside a grad transform is already gradient-free.
+        lora_model.fc1.lora_a = (
+            lora_model.fc1.lora_a + mx.random.normal(lora_model.fc1.lora_a.shape) * 0.01
+        )
+        lora_model.fc1.lora_b = (
+            lora_model.fc1.lora_b + mx.random.normal(lora_model.fc1.lora_b.shape) * 0.01
+        )
 
         # Merge LoRA
         fused_model = merge_lora(lora_model, dequantize=False)
@@ -283,10 +283,14 @@ class TestLoRARoundTrip:
         x = mx.random.normal((4, 128))
         orig_output = lora_model(x)
 
-        # Update LoRA weights
-        with mx.no_grad():
-            lora_model.fc1.lora_a.weight += mx.random.normal(lora_model.fc1.lora_a.weight.shape) * 0.1
-            lora_model.fc1.lora_b.weight += mx.random.normal(lora_model.fc1.lora_b.weight.shape) * 0.1
+        # Update LoRA weights directly (lora_a/lora_b are mx.array parameters,
+        # not modules; MLX has no mx.no_grad()).
+        lora_model.fc1.lora_a = (
+            lora_model.fc1.lora_a + mx.random.normal(lora_model.fc1.lora_a.shape) * 0.1
+        )
+        lora_model.fc1.lora_b = (
+            lora_model.fc1.lora_b + mx.random.normal(lora_model.fc1.lora_b.shape) * 0.1
+        )
 
         updated_output = lora_model(x)
 
@@ -314,6 +318,7 @@ class TestErrorHandling:
 
     def test_empty_model(self):
         """Test apply_lora on model with no Linear layers."""
+
         class EmptyModel(nn.Module):
             def __call__(self, x):
                 return x
@@ -330,14 +335,11 @@ class TestErrorHandling:
 
     def test_nested_modules(self):
         """Test LoRA application to nested modules."""
+
         class NestedModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.block1 = nn.Sequential(
-                    nn.Linear(128, 64),
-                    nn.ReLU(),
-                    nn.Linear(64, 32)
-                )
+                self.block1 = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 32))
                 self.block2 = nn.Linear(32, 10)
 
             def __call__(self, x):

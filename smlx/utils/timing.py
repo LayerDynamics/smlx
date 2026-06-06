@@ -68,8 +68,11 @@ def timer(
         toc = time.perf_counter()
         times.append(toc - tic)
 
-    # Ensure result is not None (at least one iteration must run)
-    assert result is not None, "At least one iteration must be run"
+    # When iterations were requested, the function must have run and produced a
+    # result. Zero iterations is a valid request (e.g. a no-op timing probe):
+    # return whatever the warmup produced (possibly None) with empty `times`.
+    if num_iterations > 0:
+        assert result is not None, "At least one iteration must be run"
     return result, times
 
 
@@ -185,8 +188,6 @@ def measure_runtime(
         >>> ms_per_iter = measure_runtime(matmul, a, b)
         >>> print(f"Time: {ms_per_iter:.3f}ms")
     """
-    _, times = timer(
-        fn, *args, num_warmup=num_warmup, num_iterations=num_iterations, **kwargs
-    )
+    _, times = timer(fn, *args, num_warmup=num_warmup, num_iterations=num_iterations, **kwargs)
     mean_time_sec = sum(times) / len(times)
     return mean_time_sec * 1000.0  # Convert to milliseconds

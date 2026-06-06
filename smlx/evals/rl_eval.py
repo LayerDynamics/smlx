@@ -232,12 +232,16 @@ def evaluate_agent(
         episode_length = 0
         done = False
 
-        trajectory = {
-            "observations": [],
-            "actions": [],
-            "rewards": [],
-            "infos": [],
-        } if config.save_trajectories else None
+        trajectory = (
+            {
+                "observations": [],
+                "actions": [],
+                "rewards": [],
+                "infos": [],
+            }
+            if config.save_trajectories
+            else None
+        )
 
         while not done and episode_length < config.max_steps_per_episode:
             # Select action (deterministic if epsilon=0)
@@ -283,7 +287,7 @@ def evaluate_agent(
         agent.epsilon = original_epsilon
 
     # Get peak memory
-    peak_memory_mb = mx.metal.get_peak_memory() / (1024**2) if mx.metal.is_available() else 0.0
+    peak_memory_mb = mx.get_peak_memory() / (1024**2) if mx.metal.is_available() else 0.0
 
     # Compute statistics
     mean_return = float(np.mean(episode_returns))
@@ -422,7 +426,11 @@ def compare_to_baseline(
 
     # Compute comparison metrics
     improvement = agent_results.mean_return - baseline_results.mean_return
-    improvement_percent = (improvement / abs(baseline_results.mean_return)) * 100 if baseline_results.mean_return != 0 else 0.0
+    improvement_percent = (
+        (improvement / abs(baseline_results.mean_return)) * 100
+        if baseline_results.mean_return != 0
+        else 0.0
+    )
 
     return {
         "agent_results": agent_results,
@@ -473,9 +481,7 @@ def generate_eval_report(
     # Summary table
     lines.append("Summary (sorted by mean return):")
     lines.append("-" * 80)
-    lines.append(
-        f"{'Agent':<20} {'Mean Return':<15} {'Success Rate':<15} {'Mean Length':<15}"
-    )
+    lines.append(f"{'Agent':<20} {'Mean Return':<15} {'Success Rate':<15} {'Mean Length':<15}")
     lines.append("-" * 80)
 
     for name, result in sorted_agents:

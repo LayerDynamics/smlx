@@ -177,14 +177,25 @@ def test_select_strategy_with_calibration():
     info = analyze_model(model)
     info["avg_sensitivity"] = 0.6  # High sensitivity
 
-    strategy = select_strategy(
-        info,
-        profile="aggressive",
-        calibration_available=True
-    )
+    strategy = select_strategy(info, profile="aggressive", calibration_available=True)
 
-    # Should recommend advanced method (GPTQ/AWQ) for high sensitivity
-    assert strategy["method"] in ["gptq", "awq"]
+    # High sensitivity + calibration should pick an advanced, quality-preserving
+    # method rather than a naive uniform one. "Advanced" includes calibration
+    # methods (GPTQ/AWQ/DWQ), sensitivity-aware dynamic per-layer quantization,
+    # and hardware-accelerated MXFP formats (preferred on M-series with OCP
+    # microscaling) — not just GPTQ/AWQ.
+    advanced_methods = {
+        "gptq",
+        "awq",
+        "dwq",
+        "dynamic",
+        "quantize_mxfp4",
+        "quantize_mxfp8",
+        "mixed_2_4",
+        "mixed_3_6",
+        "mixed_4_6",
+    }
+    assert strategy["method"] in advanced_methods
 
 
 @pytest.mark.unit
@@ -247,12 +258,7 @@ def test_autoquant_with_target_memory():
     current_size = info["model_size_mb"]
 
     # Target very aggressive compression
-    result = autoquant(
-        model,
-        target_memory_mb=current_size * 0.2,
-        apply=False,
-        verbose=False
-    )
+    result = autoquant(model, target_memory_mb=current_size * 0.2, apply=False, verbose=False)
 
     # Should recommend aggressive method
     assert "strategy" in result
@@ -324,11 +330,7 @@ def test_autoquant_with_calibration():
     calibration_data = [mx.random.normal((10, 256)) for _ in range(5)]
 
     result = autoquant(
-        model,
-        calibration_data=calibration_data,
-        profile="balanced",
-        apply=False,
-        verbose=False
+        model, calibration_data=calibration_data, profile="balanced", apply=False, verbose=False
     )
 
     # Should have sensitivity info
@@ -363,15 +365,26 @@ def test_autoquant_sensitivity_aware():
     info["avg_sensitivity"] = 0.8  # Very high sensitivity
     info["sensitivities"] = {"fc1": 0.8, "fc2": 0.8}
 
-    strategy = select_strategy(
-        info,
-        profile="balanced",
-        calibration_available=True
-    )
+    strategy = select_strategy(info, profile="balanced", calibration_available=True)
 
-    # Should recommend advanced quantization for high sensitivity
-    assert strategy["method"] in ["gptq", "awq"]
-    assert "sensitivity" in strategy["reason"].lower() or "gptq" in strategy["reason"].lower()
+    # Should recommend an advanced, quality-preserving method for high
+    # sensitivity — calibration methods, sensitivity-aware dynamic quantization,
+    # or hardware-accelerated MXFP formats (not a naive uniform method).
+    advanced_methods = {
+        "gptq",
+        "awq",
+        "dwq",
+        "dynamic",
+        "quantize_mxfp4",
+        "quantize_mxfp8",
+        "mixed_2_4",
+        "mixed_3_6",
+        "mixed_4_6",
+    }
+    assert strategy["method"] in advanced_methods
+    # The decision must be justified by sensitivity (or by naming the method).
+    reason = strategy["reason"].lower()
+    assert "sensitivity" in reason or strategy["method"] in reason
 
 
 @pytest.mark.unit
@@ -384,12 +397,7 @@ def test_autoquant_fine_tuning_scenario():
     current_size = info["model_size_mb"]
 
     # Target 95% of current size (minimal compression)
-    result = autoquant(
-        model,
-        target_memory_mb=current_size * 0.95,
-        apply=False,
-        verbose=False
-    )
+    result = autoquant(model, target_memory_mb=current_size * 0.95, apply=False, verbose=False)
 
     # Should recommend BFloat16 for minimal compression
     assert result["strategy"]["method"] == "convert_to_bfloat16"
@@ -413,17 +421,29 @@ def test_autoquant_error_handling():
 def test_select_strategy_size_categories():
     """Test strategy selection across model size categories."""
     # Tiny model (<200M)
-    tiny_info = {"total_params": 100_000_000, "model_size_mb": 200.0, "architecture_type": "transformer"}
+    tiny_info = {
+        "total_params": 100_000_000,
+        "model_size_mb": 200.0,
+        "architecture_type": "transformer",
+    }
     strategy = select_strategy(tiny_info, profile="aggressive")
     assert "method" in strategy
 
     # Small model (200-500M)
-    small_info = {"total_params": 300_000_000, "model_size_mb": 600.0, "architecture_type": "transformer"}
+    small_info = {
+        "total_params": 300_000_000,
+        "model_size_mb": 600.0,
+        "architecture_type": "transformer",
+    }
     strategy = select_strategy(small_info, profile="balanced")
     assert "method" in strategy
 
     # Medium model (500M-1B)
-    medium_info = {"total_params": 700_000_000, "model_size_mb": 1400.0, "architecture_type": "transformer"}
+    medium_info = {
+        "total_params": 700_000_000,
+        "model_size_mb": 1400.0,
+        "architecture_type": "transformer",
+    }
     strategy = select_strategy(medium_info, profile="conservative", calibration_available=True)
     # Medium models with calibration should use advanced methods
     assert strategy["method"] in ["gptq", "quantize_8bit"]

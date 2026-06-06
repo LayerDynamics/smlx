@@ -114,9 +114,7 @@ def load_eval_dataset(
         Tokenized data as mx.array of shape (num_samples, sequence_length)
     """
     if load_dataset is None:
-        raise ImportError(
-            "datasets is required for evaluation. Install with: pip install datasets"
-        )
+        raise ImportError("datasets is required for evaluation. Install with: pip install datasets")
 
     # Set random seed
     np.random.seed(seed)
@@ -267,7 +265,7 @@ def evaluate_perplexity(
         print(f"  Number of batches: {(len(data) + batch_size - 1) // batch_size}")
 
     # Reset memory tracking
-    mx.metal.reset_peak_memory()
+    mx.reset_peak_memory()
 
     # Evaluate
     start_time = time.time()
@@ -304,7 +302,7 @@ def evaluate_perplexity(
 
     eval_time = time.time() - start_time
     tokens_evaluated = data.shape[0] * (data.shape[1] - 1)  # B * (L - 1)
-    peak_memory = mx.metal.get_peak_memory() / 1e9
+    peak_memory = mx.get_peak_memory() / 1e9
 
     # Compile results
     results = {
@@ -351,7 +349,7 @@ def list_datasets():
         print(f"\n{name}:")
         print(f"  Description: {config['description']}")
         print(f"  Path: {config['path']}")
-        if config['name']:
+        if config["name"]:
             print(f"  Config: {config['name']}")
     print("\nYou can also use any HuggingFace dataset path.")
     print("=" * 70)

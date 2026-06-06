@@ -158,7 +158,12 @@ def load_weights(
             candidates = list(model_path.glob(f"*{ext}"))
             if candidates:
                 # Prefer model.safetensors or weights.safetensors
-                for name in ["model.safetensors", "weights.safetensors", "model.npz", "weights.npz"]:
+                for name in [
+                    "model.safetensors",
+                    "weights.safetensors",
+                    "model.npz",
+                    "weights.npz",
+                ]:
                     if (model_path / name).exists():
                         weights_path = model_path / name
                         break
@@ -167,9 +172,7 @@ def load_weights(
                 break
 
         if weights_path is None:
-            raise FileNotFoundError(
-                f"No weights file (.safetensors or .npz) found in {model_path}"
-            )
+            raise FileNotFoundError(f"No weights file (.safetensors or .npz) found in {model_path}")
 
     # Load weights
     if weights_path.suffix in [".safetensors", ".npz"]:
@@ -276,9 +279,7 @@ def save_weights(
         mx.save_safetensors(str(weights_path), weights, metadata=metadata)
     else:
         # Save as sharded files
-        save_sharded_weights(
-            weights, weights_path.parent, max_shard_size, metadata=metadata
-        )
+        save_sharded_weights(weights, weights_path.parent, max_shard_size, metadata=metadata)
 
 
 def save_sharded_weights(
@@ -618,10 +619,14 @@ def verify_weights(
         for key, weight in weights.items():
             # Check for NaN or Inf
             if check_integrity:
-                weight_np = weight.__array__() if hasattr(weight, '__array__') else weight
-                if hasattr(weight_np, 'flatten'):
-                    import numpy as np
+                import numpy as np
 
+                # np.array() converts MLX arrays, NumPy arrays, and array-likes
+                # alike. (MLX arrays do NOT implement __array__, so the old
+                # `weight.__array__() if hasattr(...)` left them as mx.array and
+                # then np.any/np.all raised TypeError.)
+                weight_np = np.array(weight)
+                if hasattr(weight_np, "flatten"):
                     if np.any(np.isnan(weight_np)):
                         raise ValueError(f"Weight '{key}' contains NaN values")
                     if np.any(np.isinf(weight_np)):
@@ -629,12 +634,12 @@ def verify_weights(
 
             # Check for pathological weights
             if check_distribution:
-                weight_np = weight.__array__() if hasattr(weight, '__array__') else weight
+                import numpy as np
+
+                weight_np = np.array(weight)
 
                 # Check if all zeros
-                if hasattr(weight_np, 'sum'):
-                    import numpy as np
-
+                if hasattr(weight_np, "sum"):
                     if np.all(weight_np == 0):
                         problematic_layers.append(f"{key}: all zeros")
 
@@ -646,9 +651,7 @@ def verify_weights(
                     elif weight_np.size > 1:
                         std = np.std(weight_np)
                         if std < 1e-8:
-                            problematic_layers.append(
-                                f"{key}: very low variance (std={std:.2e})"
-                            )
+                            problematic_layers.append(f"{key}: very low variance (std={std:.2e})")
 
         if problematic_layers:
             warning_msg = "Found potentially problematic weights:\n  - " + "\n  - ".join(
@@ -690,17 +693,17 @@ def check_tokenizer_compatibility(
     logger = logging.getLogger(__name__)
 
     # Check required attributes
-    required_attrs = ['encode', 'decode']
+    required_attrs = ["encode", "decode"]
     for attr in required_attrs:
         if not hasattr(tokenizer, attr):
             raise ValueError(f"Tokenizer missing required attribute: {attr}")
 
     # Check vocab size if config provided
     if model_config is not None:
-        if 'vocab_size' in model_config:
-            expected_vocab_size = model_config['vocab_size']
+        if "vocab_size" in model_config:
+            expected_vocab_size = model_config["vocab_size"]
 
-            if hasattr(tokenizer, 'vocab_size'):
+            if hasattr(tokenizer, "vocab_size"):
                 actual_vocab_size = tokenizer.vocab_size
                 if actual_vocab_size != expected_vocab_size:
                     logger.warning(
@@ -709,7 +712,7 @@ def check_tokenizer_compatibility(
                     )
 
     # Check for common special tokens
-    common_special_tokens = ['eos_token', 'bos_token', 'pad_token']
+    common_special_tokens = ["eos_token", "bos_token", "pad_token"]
     missing_tokens = []
 
     for token_name in common_special_tokens:
@@ -771,22 +774,21 @@ def verify_model_integrity(
     import numpy as np
 
     for name, param in params.items():
-        param_np = param.__array__() if hasattr(param, '__array__') else param
-        if hasattr(param_np, 'flatten'):
+        param_np = param.__array__() if hasattr(param, "__array__") else param
+        if hasattr(param_np, "flatten"):
             if np.any(np.isnan(param_np)):
                 raise ValueError(f"Parameter '{name}' contains NaN values")
             if np.any(np.isinf(param_np)):
                 raise ValueError(f"Parameter '{name}' contains Inf values")
 
     # Check parameter count matches config
-    if config and 'num_parameters' in config:
-        expected_params = config['num_parameters']
-        total_params = sum(p.size for p in params.values() if hasattr(p, 'size'))
+    if config and "num_parameters" in config:
+        expected_params = config["num_parameters"]
+        total_params = sum(p.size for p in params.values() if hasattr(p, "size"))
 
         if abs(total_params - expected_params) > 0.01 * expected_params:
             logger.warning(
-                f"Parameter count mismatch: "
-                f"expected ~{expected_params:,}, got {total_params:,}"
+                f"Parameter count mismatch: " f"expected ~{expected_params:,}, got {total_params:,}"
             )
 
     logger.info(f"Model integrity verified: {len(params)} parameters loaded successfully")

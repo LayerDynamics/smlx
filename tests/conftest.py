@@ -3,6 +3,19 @@
 import gc
 import os
 
+# Force a non-interactive matplotlib backend for the whole test session BEFORE
+# pyplot is imported anywhere. Several gym visualization helpers call
+# ``plt.show()``; on an interactive backend (e.g. macOS) that opens a GUI window
+# and blocks the test runner until it is closed, which manifests as a hang/
+# timeout in CI and headless runs. "Agg" makes ``plt.show()`` a safe no-op.
+os.environ.setdefault("MPLBACKEND", "Agg")
+try:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+except ImportError:
+    pass
+
 import mlx.core as mx
 import psutil
 import pytest

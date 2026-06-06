@@ -242,7 +242,7 @@ def benchmark_rl_agent(
     total_time = time.time() - total_start_time
 
     # Get peak memory
-    peak_memory_mb = mx.metal.get_peak_memory() / (1024**2) if mx.metal.is_available() else 0.0
+    peak_memory_mb = mx.get_peak_memory() / (1024**2) if mx.metal.is_available() else 0.0
 
     # Compute statistics
     import numpy as np
@@ -419,9 +419,7 @@ def compare_agents(
     return results
 
 
-def _run_single_episode(
-    agent: RLAgent, env: gym.Env, max_steps: int
-) -> tuple[float, int, bool]:
+def _run_single_episode(agent: RLAgent, env: gym.Env, max_steps: int) -> tuple[float, int, bool]:
     """Run a single episode without timing details."""
     observation, info = env.reset()
 

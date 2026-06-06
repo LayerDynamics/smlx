@@ -80,14 +80,14 @@ def profile_memory(name: str = "Operation"):
         Model Loading: 512.3MB
     """
     # Get memory before
-    mx.metal.clear_cache()
-    mem_before = mx.metal.get_active_memory() / (1024 * 1024)
+    mx.clear_cache()
+    mem_before = mx.get_active_memory() / (1024 * 1024)
 
     yield
 
     # Get memory after
     mx.eval(mx.zeros(1))  # Force evaluation
-    mem_after = mx.metal.get_active_memory() / (1024 * 1024)
+    mem_after = mx.get_active_memory() / (1024 * 1024)
 
     memory_used = mem_after - mem_before
     print(f"{name}: {memory_used:.1f}MB")
@@ -204,11 +204,11 @@ def profile_generation(
     tokens_per_second = float(avg_tokens / avg_time)
 
     # Memory usage
-    mx.metal.clear_cache()
-    mem_before = mx.metal.get_active_memory() / (1024 * 1024)
+    mx.clear_cache()
+    mem_before = mx.get_active_memory() / (1024 * 1024)
     generate(model, tokenizer, prompt, max_tokens=max_tokens)
     mx.eval(mx.zeros(1))
-    mem_after = mx.metal.get_active_memory() / (1024 * 1024)
+    mem_after = mx.get_active_memory() / (1024 * 1024)
     memory_used = float(mem_after - mem_before)
 
     result = ProfileResult(
@@ -245,7 +245,7 @@ def get_system_info() -> dict[str, Any]:
 
     # Try to get memory info
     try:
-        total_memory = mx.metal.get_peak_memory() / (1024 * 1024 * 1024)
+        total_memory = mx.get_peak_memory() / (1024 * 1024 * 1024)
         info["total_memory_gb"] = total_memory
     except Exception:
         info["total_memory_gb"] = "Unknown"

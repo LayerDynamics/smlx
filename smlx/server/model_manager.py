@@ -310,5 +310,5 @@ class ModelManager:
         self.loaded_models.clear()
         self.model_types.clear()
         # Force garbage collection
-        mx.metal.clear_cache()
+        mx.clear_cache()
         print("✅ Cleanup complete")

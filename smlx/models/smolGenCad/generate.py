@@ -104,9 +104,7 @@ def generate(
             break
 
         # Append to sequence
-        cad_ids = mx.concatenate(
-            [cad_ids, mx.array([[next_token]], dtype=mx.int32)], axis=1
-        )
+        cad_ids = mx.concatenate([cad_ids, mx.array([[next_token]], dtype=mx.int32)], axis=1)
 
     # Decode tokens to CAD sequence
     cad_sequence = cad_tokenizer.decode(generated_tokens, skip_special_tokens=True)
@@ -133,6 +131,8 @@ def generate_batch(
     temperature: float = 0.8,
     top_p: float = 0.95,
     top_k: int | None = 50,
+    auto_fix: bool = True,
+    validate: bool = True,
 ) -> list[list[tuple[CADCommandType, dict[str, Any]]]]:
     """
     Generate CAD sequences for multiple prompts.
@@ -168,15 +168,15 @@ def generate_batch(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            auto_fix=auto_fix,
+            validate=validate,
         )
         sequences.append(sequence)
 
     return sequences
 
 
-def sequence_to_dict(
-    sequence: list[tuple[CADCommandType, dict[str, Any]]]
-) -> list[dict[str, Any]]:
+def sequence_to_dict(sequence: list[tuple[CADCommandType, dict[str, Any]]]) -> list[dict[str, Any]]:
     """
     Convert CAD sequence to dictionary format for serialization.
 
@@ -192,15 +192,10 @@ def sequence_to_dict(
         >>> print(dict_seq)
         [{'command': 'CIRCLE', 'parameters': {'cx': 0, 'cy': 0, 'r': 50}}]
     """
-    return [
-        {"command": command.name, "parameters": parameters}
-        for command, parameters in sequence
-    ]
+    return [{"command": command.name, "parameters": parameters} for command, parameters in sequence]
 
 
-def sequence_to_json(
-    sequence: list[tuple[CADCommandType, dict[str, Any]]]
-) -> str:
+def sequence_to_json(sequence: list[tuple[CADCommandType, dict[str, Any]]]) -> str:
     """
     Convert CAD sequence to JSON string.
 
@@ -221,9 +216,7 @@ def sequence_to_json(
     return json.dumps(sequence_to_dict(sequence), indent=2)
 
 
-def sequence_to_python(
-    sequence: list[tuple[CADCommandType, dict[str, Any]]]
-) -> str:
+def sequence_to_python(sequence: list[tuple[CADCommandType, dict[str, Any]]]) -> str:
     """
     Convert CAD sequence to Python code representation.
 
@@ -312,9 +305,7 @@ def generate_and_export(
         ... )
     """
     # Generate sequence
-    sequence = generate(
-        model, text_tokenizer, cad_tokenizer, prompt, **generate_kwargs
-    )
+    sequence = generate(model, text_tokenizer, cad_tokenizer, prompt, **generate_kwargs)
 
     # Export to format
     if output_format == "json":
@@ -324,6 +315,4 @@ def generate_and_export(
     elif output_format == "dict":
         return str(sequence_to_dict(sequence))
     else:
-        raise ValueError(
-            f"Unknown output format: {output_format}. Use 'json', 'python', or 'dict'"
-        )
+        raise ValueError(f"Unknown output format: {output_format}. Use 'json', 'python', or 'dict'")

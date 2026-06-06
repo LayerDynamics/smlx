@@ -540,7 +540,8 @@ class DoRASwitchLinear(nn.Module):
         self.set_linear(SwitchLinear(input_dims, output_dims, num_experts, bias=bias))
         self.dropout = nn.Dropout(p=dropout)
 
-        # DoRA scaling factor
+        # DoRA rank and scaling factor
+        self.r = r
         self.scale = scale
 
         # Low-rank adaptation matrices (per expert)
@@ -631,7 +632,9 @@ class DoRASwitchLinear(nn.Module):
         # Compute adapted weight per expert: W[i] + scale * B[i] @ A[i]
         # Shape: (num_experts, output_dims, input_dims)
         lora_b_scaled = (self.scale * self.lora_b).astype(mx.float32)
-        lora_a_reshaped = self.lora_a.reshape(self.num_experts, -1, self.lora_a.shape[-1]).astype(mx.float32)
+        lora_a_reshaped = self.lora_a.reshape(self.num_experts, -1, self.lora_a.shape[-1]).astype(
+            mx.float32
+        )
         adapted = w.astype(mx.float32) + lora_b_scaled @ lora_a_reshaped
 
         # Compute norm of adapted weight (direction)
@@ -640,8 +643,14 @@ class DoRASwitchLinear(nn.Module):
 
         # Rescale by learned magnitude: (m / ||W + ΔW||) per expert
         # Gather the correct expert's magnitude scaling
-        # Shape for indices: (...,) -> need to index into (num_experts, output_dims)
+        # Shape for indices: (...,) -> index into (num_experts, output_dims)
         m_scaled = (self.m / denom)[indices]  # Shape: (..., output_dims)
+
+        # `out` carries the per-expert token axis (M=1): shape (..., 1, output).
+        # Insert the matching singleton axis into the magnitude so it rescales
+        # each token's output in place. Without this, (..., output) broadcasts
+        # against (..., 1, output) and explodes to (..., tokens, output).
+        m_scaled = mx.expand_dims(m_scaled, -2)  # Shape: (..., 1, output_dims)
 
         # Apply magnitude rescaling
         out = m_scaled.astype(dtype) * out
@@ -703,7 +712,6 @@ class DoRASwitchLinear(nn.Module):
             fused_linear = fused_linear.to_quantized(linear.group_size, linear.bits)
 
         return fused_linear
-
 
 
 __all__ = [

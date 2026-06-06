@@ -106,7 +106,10 @@ class TestModelLoading:
         """Test CAD tokenizer can be initialized."""
         assert cad_tokenizer is not None
         assert isinstance(cad_tokenizer, CADTokenizer)
-        assert cad_tokenizer.vocab_size == 1100
+        # The tokenizer's vocabulary is 10 special + 70 commands + 4*256 param
+        # bins (offset base 80) = 1104 addressable tokens (see CADTokenizer
+        # ._build_vocabulary). 1100 was a stale approximation.
+        assert cad_tokenizer.vocab_size == 1104
 
     def test_cache_creation(self, model):
         """Test KV cache can be created for model."""
