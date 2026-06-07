@@ -29,6 +29,8 @@ EXPECTED_KEYS = {
     "whisper-tiny",
     "orpheus-150m",
     "chatterbox",
+    "kokoro",
+    "ocr",
     "trocr-small",
     "donut-base",
     "minilm",
