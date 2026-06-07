@@ -33,133 +33,52 @@ def cli():
 @click.argument("model", type=str)
 @click.argument("prompt", type=str, required=False)
 @click.option("--image", "-i", type=click.Path(exists=True), help="Image file for VLM models")
-@click.option("--max-tokens", "-t", type=int, default=100, help="Maximum tokens to generate")
-@click.option("--temperature", type=float, default=0.7, help="Sampling temperature")
-@click.option("--stream/--no-stream", default=True, help="Stream output tokens")
-def generate(model, prompt, image, max_tokens, temperature, stream):
+@click.option("--max-tokens", "-t", type=int, default=200, help="Maximum tokens to generate")
+@click.option("--temperature", type=float, default=0.0, help="Sampling temperature")
+@click.option("--quantize", "-q", default=None, help="Apply SMLX quantization: 4bit or 8bit")
+def generate(model, prompt, image, max_tokens, temperature, quantize):
     """Generate text with a language or vision-language model.
+
+    Runs the model through its correct upstream MLX implementation
+    (mlx-lm / mlx-vlm) via smlx.models.mlx_backend, optionally quantized with
+    SMLX's quantization system.
 
     Examples:
 
         \b
-        # Text generation
-        smlx generate SmolLM2-135M "Hello, how are you?"
+        # Text generation (zoo alias or any HF repo)
+        smlx generate smollm2-135m "Hello, how are you?"
 
         \b
         # Vision-language generation
-        smlx generate SmolVLM-256M "What's in this image?" -i photo.jpg
+        smlx generate smolvlm-256m "What's in this image?" -i photo.jpg
 
         \b
-        # Adjust parameters
-        smlx generate SmolLM2-360M "Write a poem" -t 200 --temperature 0.9
+        # Quantize with SMLX's 4-bit, then generate
+        smlx generate smollm2-360m "Write a haiku" -q 4bit
     """
     if prompt is None:
-        # Interactive mode
         click.echo("Interactive mode - enter your prompt:")
         prompt = click.prompt("Prompt")
 
-    # Determine model type
-    model_lower = model.lower()
+    from smlx.models import mlx_backend as backend
 
     try:
-        if "vlm" in model_lower or image is not None:
-            # Vision-language model
-            _run_vlm_generation(model, prompt, image, max_tokens, temperature, stream)
-        else:
-            # Language model
-            _run_lm_generation(model, prompt, max_tokens, temperature, stream)
+        click.echo(f"Loading {model}...")
+        bm = backend.load(model, quantize=quantize)
+        click.echo(f" Loaded ({bm.backend.value}{', quantized' if bm.quantized else ''})\n")
+        click.echo("-" * 60)
+        text = backend.generate(
+            bm, prompt, image=image, max_tokens=max_tokens, temperature=temperature
+        )
+        click.echo(text)
+        click.echo("-" * 60)
     except KeyboardInterrupt:
         click.echo("\n\nGeneration interrupted.")
         sys.exit(0)
-
-
-def _run_lm_generation(model_name, prompt, max_tokens, temperature, stream):
-    """Run language model generation."""
-    click.echo(f"Loading {model_name}...")
-
-    # Determine which model to load
-    if "135m" in model_name.lower():
-        from smlx.models.SmolLM2_135M import load, stream_generate
-    elif "360m" in model_name.lower():
-        from smlx.models.SmolLM2_360M import load, stream_generate
-    else:
-        click.echo(f"Error: Unknown language model: {model_name}", err=True)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
-
-    model, tokenizer = load(model_name)
-    click.echo(f" Model loaded\n")
-
-    click.echo(f"Prompt: {prompt}\n")
-    click.echo("Generated text:")
-    click.echo("-" * 60)
-
-    if stream:
-        for token in stream_generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ):
-            click.echo(token, nl=False)
-        click.echo()  # Newline at end
-    else:
-        from smlx.models.SmolLM2_135M import generate
-
-        text = generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        click.echo(text)
-
-    click.echo("-" * 60)
-
-
-def _run_vlm_generation(model_name, prompt, image_path, max_tokens, temperature, stream):
-    """Run vision-language model generation."""
-    if image_path is None:
-        click.echo("Error: Image path required for VLM models (use -i/--image)", err=True)
-        sys.exit(1)
-
-    click.echo(f"Loading {model_name}...")
-
-    # Determine which VLM to load
-    model_lower = model_name.lower()
-    if "smolvlm-256m" in model_lower:
-        from smlx.models.SmolVLM_256M import load, generate
-    elif "smolvlm-500m" in model_lower:
-        from smlx.models.SmolVLM_500M_Instruct import load, generate
-    elif "nanovlm" in model_lower:
-        from smlx.models.nanoVLM import load, generate
-    elif "moondream" in model_lower:
-        from smlx.models.Moondream2 import load, generate
-    elif "tinyllava" in model_lower:
-        from smlx.models.TinyLLaVA import load, generate
-    else:
-        click.echo(f"Error: Unknown VLM model: {model_name}", err=True)
-        sys.exit(1)
-
-    model, processor = load(model_name)
-    click.echo(f" Model loaded\n")
-
-    click.echo(f"Image: {image_path}")
-    click.echo(f"Prompt: {prompt}\n")
-    click.echo("Generated text:")
-    click.echo("-" * 60)
-
-    text = generate(
-        model=model,
-        processor=processor,
-        prompt=prompt,
-        image=image_path,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    click.echo(text)
-    click.echo("-" * 60)
 
 
 @cli.command()
