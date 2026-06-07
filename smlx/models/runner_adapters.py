@@ -230,6 +230,102 @@ register(
 )
 
 
+# Real, trained-weights TTS via mlx-audio's Kokoro-82M. Unlike the SMLX
+# Orpheus/Chatterbox impls (which have no public checkpoint and emit noise), this
+# produces intelligible speech — verified by transcribing the output back with
+# Whisper and matching the input text.
+_KOKORO_REPO = "mlx-community/Kokoro-82M-bf16"
+_kokoro_patched = False
+
+
+def _patch_kokoro_istftnet() -> None:
+    """Fix an upstream mlx-audio shape bug in Kokoro's harmonic source generator.
+
+    ``SineGen.__call__`` builds ``sine_waves`` via ``_f02sine`` (which up- then
+    down-samples) and ``uv`` directly from f0; the resample rounding can leave
+    ``sine_waves`` a few frames longer than ``uv``, so ``sine_waves * uv + noise``
+    raises ``broadcast_shapes`` on many inputs (e.g. "Hello there."). Align both
+    to the shorter length before combining — a ~12 ms trim that makes synthesis
+    robust. Verified: previously-failing prompts now transcribe back correctly.
+    """
+    global _kokoro_patched
+    if _kokoro_patched:
+        return
+    import mlx.core as mx
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    def _aligned_call(self, f0):
+        fn = f0 * mx.arange(1, self.harmonic_num + 2)[None, None, :]
+        sine_waves = self._f02sine(fn) * self.sine_amp
+        uv = self._f02uv(f0)
+        t = min(sine_waves.shape[1], uv.shape[1])
+        sine_waves, uv = sine_waves[:, :t, :], uv[:, :t, :]
+        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
+        noise = noise_amp * mx.random.normal(sine_waves.shape)
+        sine_waves = sine_waves * uv + noise
+        return sine_waves, uv, noise
+
+    istftnet.SineGen.__call__ = _aligned_call
+    _kokoro_patched = True
+
+
+def _kokoro_loader():
+    from mlx_audio.tts.utils import load_model
+
+    _patch_kokoro_istftnet()
+    return load_model(_KOKORO_REPO)
+
+
+def _kokoro_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
+    import contextlib
+    import glob
+    import io
+    import os
+    import tempfile
+
+    import numpy as np
+    import soundfile as sf
+    from mlx_audio.tts.generate import generate_audio
+
+    with tempfile.TemporaryDirectory() as td:
+        # file_prefix is a path prefix; join_audio=True writes a single
+        # "<prefix>.wav". (output_path is not the directory control here.)
+        prefix = os.path.join(td, "kokoro")
+        with contextlib.redirect_stdout(io.StringIO()):
+            generate_audio(
+                text=text,
+                model=loaded,
+                voice=opts.get("voice", "af_heart"),
+                file_prefix=prefix,
+                audio_format="wav",
+                join_audio=True,
+                verbose=False,
+            )
+        wavs = sorted(glob.glob(os.path.join(td, "*.wav")))
+        if not wavs:
+            raise RuntimeError("Kokoro produced no audio file")
+        waveform, sr = sf.read(wavs[0])
+
+    return RunOutput(
+        kind="audio",
+        status=WeightStatus.TRAINED,
+        reason="Kokoro-82M (mlx-audio): intelligible speech",
+        audio=(np.asarray(waveform, dtype=np.float32), int(sr)),
+    )
+
+
+register(
+    RunEntry(
+        "kokoro",
+        "tts",
+        ("text",),
+        _kokoro_loader,
+        _kokoro_runner,
+        note="Kokoro-82M real TTS (mlx-audio) — trained, intelligible speech",
+    )
+)
+
+
 # --------------------------------------------------------------------------- #
 # OCR                                                                          #
 # --------------------------------------------------------------------------- #

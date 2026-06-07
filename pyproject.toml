@@ -108,7 +108,12 @@ vision = [
 audio = [
     "librosa>=0.10.0",
     "soundfile>=0.12.0",
-    # Add audio-specific dependencies here
+    # Real, trained-weights TTS: mlx-audio provides Kokoro-82M (intelligible
+    # speech); misaki[en] is Kokoro's English G2P front-end. Used by
+    # `smlx run kokoro`. Without these, only the untrained Orpheus/Chatterbox
+    # (PIPELINE-ONLY noise) TTS entries are available.
+    "mlx-audio>=0.4.0",
+    "misaki[en]>=0.7.0",
 ]
 
 # Tools dependencies (for model conversion and downloading)
