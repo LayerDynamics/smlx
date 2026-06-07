@@ -68,7 +68,7 @@ ZOO: dict[str, ZooEntry] = {
         "smolvlm-500m", "HuggingFaceTB/SmolVLM-500M-Instruct", "vlm", Backend.MLX_VLM, "500M"
     ),
     "smolvlm2-2.2b": ZooEntry(
-        "smolvlm2-2.2b", "mlx-community/SmolVLM2-2.2B-Instruct-4bit", "vlm", Backend.MLX_VLM, "2.2B"
+        "smolvlm2-2.2b", "mlx-community/SmolVLM2-2.2B-Instruct-mlx", "vlm", Backend.MLX_VLM, "2.2B"
     ),
     "qwen2-vl-2b": ZooEntry(
         "qwen2-vl-2b", "mlx-community/Qwen2-VL-2B-Instruct-4bit", "vlm", Backend.MLX_VLM, "2B"
