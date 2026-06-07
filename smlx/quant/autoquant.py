@@ -76,7 +76,7 @@ def detect_hardware_capabilities() -> dict:
                     ["system_profiler", "SPHardwareDataType"],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
                 )
                 output = result.stdout
 
@@ -116,7 +116,7 @@ def detect_hardware_capabilities() -> dict:
                         ["sysctl", "-n", "machdep.cpu.brand_string"],
                         capture_output=True,
                         text=True,
-                        timeout=2
+                        timeout=2,
                     )
                     brand = result.stdout.strip()
 
@@ -226,7 +226,7 @@ def analyze_model(
             if "attn" in name.lower() or "attention" in name.lower():
                 has_attention = True
             if "layer" in name.lower() or "block" in name.lower():
-                if "." not in name[name.index("layer"):]:  # Count unique layers
+                if "." not in name[name.index("layer") :]:  # Count unique layers
                     layer_count += 1
 
     # Determine architecture type
@@ -337,9 +337,7 @@ def select_strategy(
     # Use sensitivity to decide between simple vs advanced quantization
     # High sensitivity (>0.5) means model is sensitive to quantization errors
     # and would benefit from GPTQ/AWQ or MXFP formats
-    use_advanced_quant = calibration_available and (
-        avg_sensitivity > 0.5 or has_sensitivity_data
-    )
+    use_advanced_quant = calibration_available and (avg_sensitivity > 0.5 or has_sensitivity_data)
 
     # Strategy selection logic
     strategy = {}
@@ -394,8 +392,11 @@ def select_strategy(
                     "Aggressive compression with OCP Microscaling support. "
                     "MXFP4 provides hardware-accelerated 4-bit floating point "
                     "with better quality than INT4 (~8x compression)."
-                    + (f" Model sensitivity ({avg_sensitivity:.2f}) justifies FP over INT."
-                       if avg_sensitivity > 0.5 else "")
+                    + (
+                        f" Model sensitivity ({avg_sensitivity:.2f}) justifies FP over INT."
+                        if avg_sensitivity > 0.5
+                        else ""
+                    )
                 ),
                 "expected_size_mb": current_size_mb / 7.8,
                 "expected_quality": "high",
@@ -668,11 +669,13 @@ def autoquant(
 
     if verbose:
         print(f"  Total parameters: {model_info['total_params']/1e6:.1f}M")
-        print(f"  Quantizable parameters: {model_info['quantizable_params']/1e6:.1f}M "
-              f"({model_info['quantizable_ratio']*100:.1f}%)")
+        print(
+            f"  Quantizable parameters: {model_info['quantizable_params']/1e6:.1f}M "
+            f"({model_info['quantizable_ratio']*100:.1f}%)"
+        )
         print(f"  Current size: {model_info['model_size_mb']:.1f} MB")
         print(f"  Architecture: {model_info['architecture_type']}")
-        if model_info.get('sensitivities'):
+        if model_info.get("sensitivities"):
             print(f"  Average sensitivity: {model_info['avg_sensitivity']:.3f}")
 
     # Step 2: Select strategy
@@ -689,17 +692,19 @@ def autoquant(
         profile=profile,
         target_memory_mb=target_memory_mb,
         calibration_available=calibration_available,
-        use_case=use_case
+        use_case=use_case,
     )
 
     if verbose:
         print(f"  Selected method: {strategy['method']}")
-        if 'bits' in strategy:
+        if "bits" in strategy:
             print(f"  Bit width: {strategy['bits']}-bit")
-        if 'group_size' in strategy:
+        if "group_size" in strategy:
             print(f"  Group size: {strategy['group_size']}")
-        print(f"  Expected size: {strategy['expected_size_mb']:.1f} MB "
-              f"({model_info['model_size_mb']/strategy['expected_size_mb']:.1f}x reduction)")
+        print(
+            f"  Expected size: {strategy['expected_size_mb']:.1f} MB "
+            f"({model_info['model_size_mb']/strategy['expected_size_mb']:.1f}x reduction)"
+        )
         print(f"  Expected quality: {strategy['expected_quality']}")
         print(f"\n  Reason: {strategy['reason']}")
 
@@ -725,14 +730,17 @@ def autoquant(
             # ========================================================================
             if method == "quantize_4bit":
                 from . import quantize_4bit
+
                 quantize_4bit(model, group_size=strategy.get("group_size", 64))
 
             elif method == "quantize_6bit":
                 from . import quantize_6bit
+
                 quantize_6bit(model, group_size=strategy.get("group_size", 64))
 
             elif method == "quantize_8bit":
                 from . import quantize_8bit
+
                 quantize_8bit(model, group_size=strategy.get("group_size", 64))
 
             # ========================================================================
@@ -740,11 +748,13 @@ def autoquant(
             # ========================================================================
             elif method == "quantize_fp4":
                 from .fp4 import quantize_model_fp4
+
                 quantize_model_fp4(model)
 
             elif method == "quantize_fp8":
                 # DEPRECATED: FP8 is simulated (stored as float16). Use MXFP8 instead.
                 import warnings
+
                 warnings.warn(
                     "quantize_fp8 is deprecated (simulated only). "
                     "Automatically using quantize_mxfp8 for true 8-bit storage. "
@@ -753,18 +763,22 @@ def autoquant(
                     stacklevel=2,
                 )
                 from .mxfp8 import quantize_model_mxfp8
+
                 quantize_model_mxfp8(model)
 
             elif method == "quantize_mxfp4":
                 from .mxfp4 import quantize_model_mxfp4
+
                 quantize_model_mxfp4(model)
 
             elif method == "quantize_mxfp8":
                 from .mxfp8 import quantize_model_mxfp8
+
                 quantize_model_mxfp8(model)
 
             elif method == "convert_to_bfloat16":
                 from .bf16 import convert_to_bfloat16
+
                 convert_to_bfloat16(model)
 
             # ========================================================================
@@ -772,14 +786,14 @@ def autoquant(
             # ========================================================================
             elif method == "mixed_3_6":
                 from .mixed_3_6 import quantize_3_6_mixed
+
                 quantize_3_6_mixed(
-                    model,
-                    strategy=strategy.get("profile", "balanced"),
-                    verbose=False
+                    model, strategy=strategy.get("profile", "balanced"), verbose=False
                 )
 
             elif method == "mixed_bit_custom":
                 from .mixed_bit import apply_mixed_bit_quantization, create_balanced_strategy
+
                 target_bpw = strategy.get("target_bpw", 4.5)
                 strat = create_balanced_strategy(target_bpw=target_bpw)
                 apply_mixed_bit_quantization(model, strat)
@@ -789,50 +803,63 @@ def autoquant(
             # ========================================================================
             elif method == "gptq":
                 from .gptq import gptq_quantize
+
                 if calibration_data is None:
                     if verbose:
-                        print("  Warning: GPTQ requires calibration data. "
-                              "Falling back to simple quantization.")
+                        print(
+                            "  Warning: GPTQ requires calibration data. "
+                            "Falling back to simple quantization."
+                        )
                     from . import quantize_4bit
+
                     quantize_4bit(model, group_size=strategy.get("group_size", 64))
                 else:
                     gptq_quantize(
                         model,
                         calibration_data,
                         bits=strategy.get("bits", 4),
-                        group_size=strategy.get("group_size", 64)
+                        group_size=strategy.get("group_size", 64),
                     )
 
             elif method == "awq":
-                from .awq import awq_quantize
+                from .awq import awq_quantize, llama_awq
+
                 if calibration_data is None:
                     if verbose:
-                        print("  Warning: AWQ requires calibration data. "
-                              "Falling back to simple quantization.")
+                        print(
+                            "  Warning: AWQ requires calibration data. "
+                            "Falling back to simple quantization."
+                        )
                     from . import quantize_4bit
+
                     quantize_4bit(model, group_size=strategy.get("group_size", 64))
                 else:
                     awq_quantize(
                         model,
                         calibration_data,
+                        llama_awq,
                         bits=strategy.get("bits", 4),
-                        group_size=strategy.get("group_size", 64)
+                        group_size=strategy.get("group_size", 64),
                     )
 
             elif method == "dwq":
                 from .dwq import dwq_quantize
+
                 if calibration_data is None:
                     if verbose:
-                        print("  Warning: DWQ requires calibration data. "
-                              "Falling back to simple quantization.")
+                        print(
+                            "  Warning: DWQ requires calibration data. "
+                            "Falling back to simple quantization."
+                        )
                     from . import quantize_4bit
+
                     quantize_4bit(model, group_size=strategy.get("group_size", 64))
                 else:
                     dwq_quantize(
                         model,
                         calibration_data,
                         bits=strategy.get("bits", 4),
-                        group_size=strategy.get("group_size", 64)
+                        group_size=strategy.get("group_size", 64),
                     )
 
             # ========================================================================
@@ -840,19 +867,19 @@ def autoquant(
             # ========================================================================
             elif method == "dynamic":
                 from .dynamic_quant import dynamic_quantize
+
                 if calibration_data is None:
                     if verbose:
-                        print("  Warning: Dynamic quantization requires calibration data. "
-                              "Falling back to mixed-precision.")
+                        print(
+                            "  Warning: Dynamic quantization requires calibration data. "
+                            "Falling back to mixed-precision."
+                        )
                     from .mixed_3_6 import quantize_3_6_mixed
+
                     quantize_3_6_mixed(model, strategy="balanced", verbose=False)
                 else:
                     target_bpw = strategy.get("target_bpw", 4.5)
-                    dynamic_quantize(
-                        model,
-                        calibration_data,
-                        target_bpw=target_bpw
-                    )
+                    dynamic_quantize(model, calibration_data, target_bpw=target_bpw)
 
             else:
                 raise ValueError(f"Unknown quantization method: {method}")
@@ -926,18 +953,22 @@ def recommend_strategy(
     if verbose:
         print("[*] Quantization Strategy Recommendations")
         print("=" * 60)
-        print(f"\nModel: {model_info['total_params']/1e6:.1f}M parameters, "
-              f"{model_info['model_size_mb']:.1f} MB")
+        print(
+            f"\nModel: {model_info['total_params']/1e6:.1f}M parameters, "
+            f"{model_info['model_size_mb']:.1f} MB"
+        )
         print(f"Architecture: {model_info['architecture_type']}")
 
         for profile in ["aggressive", "balanced", "conservative"]:
             strat = recommendations[profile]
             print(f"\n{profile.upper()}:")
             print(f"  Method: {strat['method']}")
-            if 'bits' in strat:
+            if "bits" in strat:
                 print(f"  Bits: {strat.get('bits')}")
-            print(f"  Size: {strat['expected_size_mb']:.1f} MB "
-                  f"({model_info['model_size_mb']/strat['expected_size_mb']:.1f}x)")
+            print(
+                f"  Size: {strat['expected_size_mb']:.1f} MB "
+                f"({model_info['model_size_mb']/strat['expected_size_mb']:.1f}x)"
+            )
             print(f"  Quality: {strat['expected_quality']}")
             print(f"  Reason: {strat['reason']}")
 

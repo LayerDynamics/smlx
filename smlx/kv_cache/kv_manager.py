@@ -118,6 +118,7 @@ class KVCacheManager:
         step: int | None = None,
         enable_tracing: bool = False,
         enable_memory_monitoring: bool = True,
+        enable_monitoring: bool | None = None,  # Alias for enable_memory_monitoring
     ) -> KVCacheManager:
         """
         Create manager with rotating (fixed-size) KV caches.
@@ -140,6 +141,10 @@ class KVCacheManager:
             ...     keep=256
             ... )
         """
+        # Support both enable_monitoring and enable_memory_monitoring
+        if enable_monitoring is not None:
+            enable_memory_monitoring = enable_monitoring
+
         caches = [
             MLXRotatingKVCache(
                 max_size=max_kv_size, keep=keep, step=step, enable_tracing=enable_tracing
@@ -160,6 +165,7 @@ class KVCacheManager:
         step: int | None = None,
         enable_tracing: bool = False,
         enable_memory_monitoring: bool = True,
+        enable_monitoring: bool | None = None,  # Alias for enable_memory_monitoring
     ) -> KVCacheManager:
         """
         Create manager with quantized KV caches.
@@ -185,6 +191,10 @@ class KVCacheManager:
             ...     max_size=4096
             ... )
         """
+        # Support both enable_monitoring and enable_memory_monitoring
+        if enable_monitoring is not None:
+            enable_memory_monitoring = enable_monitoring
+
         caches = [
             QuantizedMLXKVCache(
                 bits=bits,
@@ -209,6 +219,7 @@ class KVCacheManager:
         head_dim: int = 64,
         enable_tracing: bool = False,
         enable_memory_monitoring: bool = True,
+        enable_monitoring: bool | None = None,  # Alias for enable_memory_monitoring
     ) -> KVCacheManager:
         """
         Auto-configure cache type based on available memory.
@@ -235,6 +246,10 @@ class KVCacheManager:
             ...     target_memory_gb=32.0
             ... )
         """
+        # Support both enable_monitoring and enable_memory_monitoring
+        if enable_monitoring is not None:
+            enable_memory_monitoring = enable_monitoring
+
         # Get device info
         device_info = get_device_info()
         max_device_gb = device_info["max_recommended_working_set_size_gb"]

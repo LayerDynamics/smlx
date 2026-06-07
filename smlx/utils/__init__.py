@@ -427,7 +427,7 @@ def load_csv(path: Union[str, Path]) -> list[dict[str, Any]]:
         list of dictionaries (one per row)
     """
     with open(path, encoding="utf-8") as f:
-        return list(csv.dictReader(f))
+        return list(csv.DictReader(f))
 
 
 def save_csv(
@@ -450,7 +450,7 @@ def save_csv(
         fieldnames = list(data[0].keys())
 
     with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.dictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(data)
 
