@@ -125,8 +125,12 @@ def test_all_minilm_l6_v2_semantic(semantic_sentences):
 
 def test_trocr_small_reads_text():
     pytest.skip(
-        "WS-2: convert microsoft/trocr-small-printed weights to MLX in the loader "
-        "(default path currently can fall back to random)."
+        "WS-2: TrOCR-small loads REAL microsoft/trocr-small-printed weights (not random) "
+        "but the decoder emits gibberish on a clean 'HELLO' image. Red flag at load: "
+        "'Updating vocab size from config (64044) to tokenizer (64002)' — a 42-token "
+        "mismatch that misaligns the decoder embedding/lm_head. Fix the vocab/tokenizer "
+        "reconciliation (and verify encoder->decoder cross-attention) against the HF "
+        "VisionEncoderDecoder/TrOCR reference, then assert OCR matches the rendered text."
     )
 
 
