@@ -274,6 +274,7 @@ pip install -e ".[all]"             # With all optional dependencies
 ```
 
 **pytest.ini gotchas that bite (all configured in `addopts`/`[pytest]`):**
+
 - `filterwarnings = error` — **any warning fails the test**. New code that emits a
   DeprecationWarning (etc.) will fail until the warning is fixed or explicitly ignored.
 - `--timeout=60` (thread method) — a single test taking >60s is killed. Mark genuinely
@@ -375,6 +376,7 @@ Three-layer architecture for universal model handling:
 3. **Manager** (`smlx_manager.py`) - Manages model lifecycle, caching, and telemetry
 
 **Universal model loading**:
+
 ```python
 from smlx.models import load_model
 
@@ -388,28 +390,35 @@ model, tokenizer = load_model("mlx-community/SmolLM2-135M-Instruct", quantizatio
 ### Implemented Models
 
 **Language Models**:
+
 - SmolLM2_135M, SmolLM2_360M
 
 **Vision-Language Models**:
+
 - SmolVLM_256M, SmolVLM_500M_Instruct, nanoVLM, Moondream2, TinyLLaVA
 
 **Audio Models**:
+
 - Whisper_tiny, Chatterbox (TTS), Orpheus_150M (TTS), YAMNet, SileroVAD
 
 **Document/OCR**:
+
 - TrOCR_small, Donut_base
 
 **Embeddings**:
+
 - MiniLM (full implementation in `MiniLM/model.py`)
 - all_MiniLM_L6_v2 (thin wrapper around MiniLM — no own `model.py`)
 
 **CAD Generation**:
+
 - smolGenCad — 158M text-to-CAD model (SmolLM2-135M encoder + custom 8-layer
   transformer decoder for parametric CAD sequence generation)
 
 ### Server Architecture (FastAPI)
 
 OpenAI-compatible REST API with:
+
 - `POST /v1/chat/completions` - Chat with message history
 - `POST /v1/completions` - Text completion
 - `POST /v1/audio/transcriptions` - Audio transcription
@@ -419,6 +428,7 @@ OpenAI-compatible REST API with:
 **Running the server** — `smlx/server/app.py` does **not** parse CLI args; its
 `__main__` block hardcodes `0.0.0.0:8000` with `reload=True`. To control host/port, use
 the CLI command or invoke uvicorn directly:
+
 ```bash
 # Preferred — Click CLI (accepts --host/--port/--reload/--log-level)
 python -m smlx.main server --host 0.0.0.0 --port 8000
@@ -437,6 +447,7 @@ python -m smlx.server.app
 The `resources/` directory contains reference implementations from MLX ecosystem projects (mlx-lm, mlx-vlm, etc.). **DO NOT** import from these modules directly.
 
 **Correct approach**:
+
 1. Study implementation patterns in `resources/`
 2. Copy and adapt code into appropriate `smlx/` module
 3. Ensure implementation is suitable for "smol" models
@@ -471,6 +482,7 @@ smlx/models/YourModel/            # SmolLM2-style (language / VLM) layout
 ```
 
 **Key requirements**:
+
 - Must be < 1B parameters
 - Must use MLX operations throughout
 - Must support quantization (4-bit/8-bit)
@@ -479,6 +491,7 @@ smlx/models/YourModel/            # SmolLM2-style (language / VLM) layout
 ### 5. Use Shared Utilities
 
 Prefer utilities from `smlx/utils/` over reimplementing:
+
 - `generation.py` - Text generation, streaming, chat
 - `sampling.py` - Token sampling (temperature, top-p, top-k)
 - `loading.py` - Model and tokenizer loading
@@ -531,6 +544,7 @@ tests/
 > will still fail until the files are pulled.
 
 The `data/` directory is tracked with Git LFS and contains:
+
 - `data/audio/` - Audio test files
 - `data/benchmark/` - Benchmark datasets
 - `data/datasets/` - Evaluation datasets (MathVista, MMMU, etc.)
@@ -544,18 +558,21 @@ The `data/` directory is tracked with Git LFS and contains:
 The `smlx/quant/` module provides comprehensive quantization:
 
 **Methods**:
+
 - GPTQ - Post-training quantization for language models
 - AWQ - Activation-aware weight quantization
 - Dynamic - Mixed-precision based on layer sensitivity
 - LoRA/DoRA - Parameter-efficient fine-tuning
 
 **Bit-widths**:
+
 - 4-bit, 6-bit, 8-bit integer quantization
 - FP4, FP8 floating-point formats
 - MXFP4, MXFP8 microscaling formats (OCP standard)
 - GGML formats (Q4_0, Q4_1, Q4_K, Q8_0) - llama.cpp compatible
 
 **Usage**:
+
 ```python
 from smlx.quant import quantize_model, gptq_quantize, awq_quantize
 

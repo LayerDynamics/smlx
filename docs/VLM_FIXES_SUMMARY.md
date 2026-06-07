@@ -9,6 +9,7 @@ This document summarizes all fixes and improvements made to Vision-Language Mode
 ### 1. MLX Item Assignment Bug (CRITICAL)
 
 **Issue**: Both SmolVLM and nanoVLM were using direct item assignment to insert image features:
+
 ```python
 # ❌ DOESN'T WORK - MLX arrays are immutable
 inputs_embeds[:, image_positions, :] = image_features
@@ -19,6 +20,7 @@ inputs_embeds[:, image_positions, :] = image_features
 **Fix**: Use `mx.put_along_axis()` or `mx.where()` for proper MLX array manipulation:
 
 **SmolVLM** ([model.py:218-240](smlx/models/SmolVLM_256M/model.py#L218-L240)):
+
 ```python
 # ✅ WORKS - Use mx.put_along_axis()
 position_indices = mx.array(image_positions).reshape(1, -1, 1)
@@ -32,6 +34,7 @@ final_embeds = mx.put_along_axis(
 ```
 
 **nanoVLM** ([model.py:129-201](smlx/models/nanoVLM/model.py#L129-L201)):
+
 ```python
 # ✅ WORKS - Use mx.where() with masks
 image_mask = input_ids == image_token_id
@@ -49,6 +52,7 @@ final_embedding = mx.where(image_mask_expanded, vision_embeds_padded, final_embe
 ### 2. bfloat16 Kernel Loading Issue
 
 **Issue**: Using bfloat16 dtype causes cumsum kernel loading errors:
+
 ```
 unable to load kernel contiguous_scan_inclusive_sum_bfloat16_bfloat16
 ```
@@ -56,6 +60,7 @@ unable to load kernel contiguous_scan_inclusive_sum_bfloat16_bfloat16
 **Fix**: Convert bfloat16 to float32 at the start of sampling functions.
 
 **Files Updated**:
+
 - [smlx/models/nanoVLM/generate.py:114-118](smlx/models/nanoVLM/generate.py#L114-L118)
 - [smlx/utils/sampling.py:57-61](smlx/utils/sampling.py#L57-L61)
 - [smlx/utils/sampling.py:227-231](smlx/utils/sampling.py#L227-L231)
@@ -70,6 +75,7 @@ if logits.dtype == mx.bfloat16:
 ### 3. Boolean Indexing Not Supported
 
 **Issue**: MLX doesn't support boolean indexing like NumPy:
+
 ```python
 # ❌ DOESN'T WORK
 text_embeds[text_mask]  # ValueError: boolean indices are not yet supported
@@ -84,6 +90,7 @@ text_embeds[text_mask]  # ValueError: boolean indices are not yet supported
 Ported from mlx-vlm for proper vision-language integration.
 
 **nanoVLM** [prepare_inputs()](smlx/models/nanoVLM/generate.py#L24-L91):
+
 ```python
 def prepare_inputs(processor, prompt, image, image_token_id=49150, num_image_tokens=49):
     """
@@ -145,6 +152,7 @@ def apply_chat_template(model_type, prompt, num_images=0):
 ```
 
 **Examples**:
+
 ```python
 # Simple prompt
 apply_chat_template("nanovlm", "Describe the scene", num_images=1)
@@ -167,6 +175,7 @@ Fixed vision-text embedding scale mismatch in nanoVLM.
 **Issue**: Vision embeddings had std=6.62, text std=0.14 (88x ratio)
 
 **Fix** [nanoVLM/model.py:140-143](smlx/models/nanoVLM/model.py#L140-L143):
+
 ```python
 # Scale vision features to match text embedding magnitude
 vision_scale_factor = 0.15
@@ -201,16 +210,20 @@ vision_embeds = vision_embeds * vision_scale_factor
 ## Remaining Issues
 
 ### 1. Checkpoint Quality
+
 Both tested checkpoints produce gibberish despite correct architecture:
+
 - nanoVLM: `": : : - - - -"` or `"????????????????"`
 - SmolVLM: `"[[[[[[ authentique"`
 
 **Possible causes**:
+
 - Checkpoints undertrained or incompatible
 - Additional scaling needed
 - Missing preprocessing steps
 
 ### 2. SmolVLM Conv2D Error
+
 ```
 ValueError: [conv] Invalid weight array with 4 dimensions for 3D convolution.
 Expected an array with 5 dimensions following the format [C_out, ..., C_in].
@@ -223,6 +236,7 @@ Expected an array with 5 dimensions following the format [C_out, ..., C_in].
 ## Architecture Validation
 
 ✅ **Confirmed working**:
+
 - Image token insertion mechanism
 - Vision-text embedding merging
 - Token sampling with repetition penalty
@@ -230,6 +244,7 @@ Expected an array with 5 dimensions following the format [C_out, ..., C_in].
 - bfloat16 dtype handling
 
 ⚠️ **Needs validation**:
+
 - End-to-end generation with validated checkpoints
 - Vision encoder weight loading (SmolVLM)
 - Feature scaling across different model architectures
@@ -237,18 +252,21 @@ Expected an array with 5 dimensions following the format [C_out, ..., C_in].
 ## Files Modified
 
 ### Core Model Files
+
 - `smlx/models/nanoVLM/model.py` - Image token replacement
 - `smlx/models/nanoVLM/generate.py` - prepare_inputs(), sample() with repetition penalty and bfloat16 fix
 - `smlx/models/SmolVLM_256M/model.py` - Fixed MLX item assignment bug
 - `smlx/models/Moondream2/loader.py` - Fixed TokenizerWrapper `__len__()`
 
 ### Utilities
+
 - `smlx/utils/sampling.py` - Added bfloat16 workarounds to sample() and top_p_sampling()
 - `smlx/utils/chat_templates.py` - **NEW** - Chat template formatting
 - `smlx/utils/vlm_diagnostics.py` - Fixed boolean indexing bugs
 - `smlx/utils/__init__.py` - Exported new utilities
 
 ### Documentation
+
 - `docs/VLM_IMAGE_TOKEN_FIX.md` - Image token replacement implementation
 - `docs/VLM_SESSION_SUMMARY.md` - Detailed session documentation
 - `docs/VLM_FIXES_SUMMARY.md` - **THIS FILE**
@@ -256,6 +274,7 @@ Expected an array with 5 dimensions following the format [C_out, ..., C_in].
 ## Performance Impact
 
 All fixes maintain performance while ensuring correctness:
+
 - `mx.put_along_axis()` and `mx.where()` are compiled operations (no overhead)
 - bfloat16→float32 conversion is one-time at sampling start
 - Repetition penalty uses efficient set-based lookups
@@ -270,7 +289,7 @@ All fixes maintain performance while ensuring correctness:
 
 ## References
 
-- mlx-vlm repository: https://github.com/Blaizzy/mlx-vlm
-- MLX documentation: https://ml-explore.github.io/mlx/
+- mlx-vlm repository: <https://github.com/Blaizzy/mlx-vlm>
+- MLX documentation: <https://ml-explore.github.io/mlx/>
 - Image token replacement pattern: `resources/mlx-vlm/mlx_vlm/utils.py:782-895`
 - Top-p sampling: `resources/mlx-vlm/mlx_vlm/sample_utils.py:4-40`

@@ -7,6 +7,7 @@
 **Symptom:** All three VLM models (nanoVLM, Moondream2, TinyLLaVA) producing gibberish or empty output
 
 **Diagnosis:**
+
 - Added comprehensive vision feature diagnostics to track embedding statistics
 - Discovered that projected vision features had **88x larger standard deviation** than text embeddings
 - This extreme imbalance caused vision features to dominate attention, resulting in gibberish output
@@ -39,6 +40,7 @@ def compare_with_reference(smlx_output, reference_output, label)
 ```
 
 **Integrated into all three VLM models:**
+
 - `smlx/models/nanoVLM/model.py`
 - `smlx/models/Moondream2/model.py`
 - `smlx/models/TinyLLaVA/model.py`
@@ -52,17 +54,20 @@ def compare_with_reference(smlx_output, reference_output, label)
 ### Phase 1.3: Scale Correction ⚠️ PARTIALLY WORKING
 
 **Approach 1 - LayerNorm in Projection (REVERTED)**
+
 - Added LayerNorm after projection layer
 - Result: Normalized to std=1.0, ratio improved to 7.09x
 - **Issue:** Created new layer without pretrained weights, disrupted model expectations
 - **Outcome:** Empty output instead of gibberish (progress but not working)
 
 **Approach 2 - Fixed Scale Factor (CURRENT)**
+
 - Reverted projection changes to preserve pretrained weights
 - Added scale factor (0.04) in model forward pass, before concatenation
 - Result: Vision std=0.27, **ratio=1.92x** ✅ (target: <2x)
 
 **Implementation in `smlx/models/nanoVLM/model.py`:**
+
 ```python
 # Scale vision embeddings to match text embedding magnitude
 # Projected vision features have std~6-10, text embeddings have std~0.1-0.5
@@ -72,19 +77,23 @@ vision_embeds = vision_embeds * vision_scale_factor
 ```
 
 **Current Status:**
+
 - ✅ Scale ratio fixed: 88x → 1.92x
 - ❌ Output still empty (no longer gibberish, but no meaningful text)
 
 ## Outstanding Issues
 
 ### 1. Checkpoint Mismatch
+
 **Problem:** Using `lusxvr/nanoVLM-222M` which is NOT validated by mlx-vlm
+
 - mlx-vlm uses `mlx-community/nanoLLaVA-1.5-8bit` instead
 - Untested checkpoints may have training issues or incompatible architectures
 
 **Solution:** Test with mlx-vlm validated checkpoints
 
 ### 2. Missing mlx-vlm Components
+
 **Problem:** SMLX implementations missing critical components from mlx-vlm:
 
 | Component | mlx-vlm | SMLX Status |
@@ -95,18 +104,22 @@ vision_embeds = vision_embeds * vision_scale_factor
 | Image token placement | Model-specific | ❌ Not implemented |
 
 **Critical Missing Function:**
+
 ```python
 # resources/mlx-vlm/mlx_vlm/utils.py:782-895
 def prepare_inputs(image_processor, processor, image, prompt, config)
 ```
 
 This function:
+
 - Applies model-specific chat templates
 - Places image tokens correctly (before/after text depends on model)
 - Handles tokenization with proper special tokens
 
 ### 3. Generation Parameters
+
 **Current Settings:**
+
 ```python
 temperature = 0.5  # Updated from 1.0 (mlx-vlm default)
 top_p = 1.0        # Updated from 0.95
@@ -115,7 +128,9 @@ top_p = 1.0        # Updated from 0.95
 **Issue:** May need additional tuning or repetition penalty
 
 ### 4. Sampling Implementation
+
 **Missing bfloat16 Workaround:**
+
 ```python
 # resources/mlx-vlm/mlx_vlm/sample_utils.py:4-40
 def top_p_sampling(logits, top_p, temperature):
@@ -128,6 +143,7 @@ def top_p_sampling(logits, top_p, temperature):
 ## Recommended Next Steps
 
 ### Immediate (Phase 2)
+
 1. **Port `prepare_inputs()` from mlx-vlm**
    - File: `resources/mlx-vlm/mlx_vlm/utils.py:782-895`
    - Target: Create `smlx/utils/vlm_utils.py`
@@ -141,6 +157,7 @@ def top_p_sampling(logits, top_p, temperature):
    - Add bfloat16 workaround
 
 ### Validation (Phase 3)
+
 1. **Test with Known-Good Checkpoints**
    - SmolVLM: Try `mlx-community/Qwen2-VL-2B-Instruct-4bit` (proven working in mlx-vlm)
    - nanoVLM: Try `mlx-community/nanoLLaVA-1.5-8bit` if available
@@ -151,6 +168,7 @@ def top_p_sampling(logits, top_p, temperature):
    - TinyLLaVA: Verify token injection strategy
 
 ### Testing (Phase 4)
+
 1. **Create Integration Tests**
    - Test file: `tests/integration/test_vlm_generation.py`
    - Compare SMLX vs mlx-vlm outputs for same inputs
@@ -162,6 +180,7 @@ def top_p_sampling(logits, top_p, temperature):
    - Spatial reasoning
 
 ### Instrumentation (Phase 5)
+
 1. **Enhanced Debug Tool**
    - Create `tools/debug_vlm_generation.py`
    - Track: vision features, combined embeddings, logits, token probabilities
@@ -170,9 +189,11 @@ def top_p_sampling(logits, top_p, temperature):
 ## Files Modified This Session
 
 ### Created
+
 - `smlx/utils/vlm_diagnostics.py` - Comprehensive VLM debugging utilities
 
 ### Modified
+
 - `smlx/utils/__init__.py` - Export new diagnostics functions
 - `smlx/models/nanoVLM/model.py` - Add diagnostics + vision scaling (0.04 factor)
 - `smlx/models/nanoVLM/projection.py` - Documentation updates
@@ -205,6 +226,7 @@ def top_p_sampling(logits, top_p, temperature):
 ## Statistics Summary
 
 ### Before Fix
+
 ```
 Vision encoder output: mean=0.016, std=0.35
 Projected vision features: mean=0.16, std=6.62  ← Problem!
@@ -214,6 +236,7 @@ Output: "In In In We We We Weâlaus page" (gibberish)
 ```
 
 ### After Scale Fix
+
 ```
 Vision encoder output: mean=0.016, std=0.37
 Projected vision features (raw): mean=0.16, std=6.75
@@ -226,6 +249,7 @@ Output: (empty)  ← Better than gibberish, but still not working
 ## Conclusion
 
 **Phase 1 Progress:**
+
 - ✅ Diagnostic infrastructure in place
 - ✅ Root cause identified (88x scale mismatch)
 - ✅ Scale ratio fixed (88x → 1.92x)
@@ -234,6 +258,7 @@ Output: (empty)  ← Better than gibberish, but still not working
 **Next Critical Step:** Port mlx-vlm's `prepare_inputs()` and chat templates (Phase 2)
 
 The scale fix was necessary but not sufficient. VLM generation requires:
+
 1. Balanced vision-text scaling (now fixed)
 2. Proper input formatting (missing - need prepare_inputs + chat templates)
 3. Robust sampling (partial - need bfloat16 workaround)
