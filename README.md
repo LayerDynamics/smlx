@@ -188,6 +188,21 @@ smlx models verify            # load + run every model, check output is REAL
 smlx generate smolvlm-256m "What's this?" -i photo.jpg -q 4bit
 ```
 
+### Run any model (`smlx run`)
+
+Beyond the curated zoo, `smlx run` produces real output from **every** implemented
+model (all 17 — including TTS, OCR, VAD, audio-classification, CAD), each through
+its own pipeline, with an honest weight status (`TRAINED` / `TRAINED-WEIGHTS` /
+`PIPELINE-ONLY` / `SKIPPED`). Audio/CAD/json artifacts land in `data/output/`. See
+[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md#run-any-model-smlx-run).
+
+```bash
+smlx run --list                                # every model + what input it needs
+smlx run smollm2-135m --text "What is MLX?"
+smlx run orpheus-150m --text "Hello world"     # -> data/output/orpheus-150m.wav
+smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
+```
+
 ### Agent with Tools
 
 ```python

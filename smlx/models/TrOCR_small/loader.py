@@ -138,9 +138,11 @@ def map_weight_names(weights: dict) -> dict:
             new_key = new_key.replace(".attention.attention.value", ".attention.v_proj")
             new_key = new_key.replace(".attention.output.dense", ".attention.out_proj")
 
-            # MLP layers: intermediate.dense -> mlp.0, output.dense -> mlp.2
-            new_key = new_key.replace(".intermediate.dense", ".mlp.0")
-            new_key = new_key.replace(".output.dense", ".mlp.2")
+            # MLP layers: the model's MLP is an nn.Sequential, whose children are
+            # addressed as `mlp.layers.0` / `mlp.layers.2` (NOT `mlp.0`/`mlp.2`).
+            # Mapping to the latter left every FFN layer on random weights.
+            new_key = new_key.replace(".intermediate.dense", ".mlp.layers.0")
+            new_key = new_key.replace(".output.dense", ".mlp.layers.2")
 
             # Layer norms
             new_key = new_key.replace(".layernorm_before", ".ln1")
@@ -162,9 +164,10 @@ def map_weight_names(weights: dict) -> dict:
             # Cross attention: encoder_attn -> cross_attn
             new_key = new_key.replace(".encoder_attn.", ".cross_attn.")
 
-            # MLP layers: fc1 -> mlp.0, fc2 -> mlp.2
-            new_key = new_key.replace(".fc1", ".mlp.0")
-            new_key = new_key.replace(".fc2", ".mlp.2")
+            # MLP layers: model's MLP is an nn.Sequential -> `mlp.layers.0/2`
+            # (mapping to `mlp.0`/`mlp.2` left the decoder FFN on random weights).
+            new_key = new_key.replace(".fc1", ".mlp.layers.0")
+            new_key = new_key.replace(".fc2", ".mlp.layers.2")
 
             # Layer norms
             new_key = new_key.replace(".self_attn_layer_norm", ".ln1")

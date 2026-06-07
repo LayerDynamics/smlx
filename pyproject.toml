@@ -30,16 +30,18 @@ classifiers = [
 dependencies = [
     "mlx>=0.14.0",
     "numpy>=1.24.0",
-    "huggingface-hub>=0.20.0",
-    "transformers>=4.40.0",
+    "huggingface-hub>=1.0",
+    # transformers 5.x is required by current mlx-lm/mlx-audio; mlx-vlm>=0.6 is the
+    # transformers-5-compatible line (mlx-vlm 0.3.x breaks on Qwen2-VL with 5.x).
+    "transformers>=5.5.0",
     "pillow>=10.0.0",
     "requests>=2.31.0",
     "tqdm>=4.66.0",
     "word2number>=1.1",
     "psutil>=5.9.0",  # runtime memory profiling (smlx.models.smlx_manager) — required to import smlx.models
     "safetensors>=0.4.0",  # weight loading/conversion is used across core model loaders
-    "mlx-lm>=0.20.0",  # correct upstream MLX language-model implementations (smlx.models.mlx_backend)
-    "mlx-vlm>=0.1.0",  # correct upstream MLX vision-language implementations (smlx.models.mlx_backend)
+    "mlx-lm>=0.31.0",  # correct upstream MLX language-model implementations (smlx.models.mlx_backend)
+    "mlx-vlm>=0.6.0",  # correct upstream MLX vision-language implementations (smlx.models.mlx_backend)
     "num2words>=0.5.0",  # required by some mlx-vlm processors (e.g. SmolVLM) for number normalization
 ]
 
@@ -108,7 +110,17 @@ vision = [
 audio = [
     "librosa>=0.10.0",
     "soundfile>=0.12.0",
-    # Add audio-specific dependencies here
+    # Real, trained-weights TTS: mlx-audio provides Kokoro-82M (intelligible
+    # speech); misaki[en] is Kokoro's English G2P front-end. Used by
+    # `smlx run kokoro`. Without these, only the untrained Orpheus/Chatterbox
+    # (PIPELINE-ONLY noise) TTS entries are available.
+    "mlx-audio>=0.4.0",
+    "misaki[en]>=0.7.0",
+    # Real Silero VAD v5 via onnxruntime (`smlx run silero-vad`). silero-vad
+    # bundles the ONNX model; the runner reads it WITHOUT importing the package
+    # (so no torch is pulled), with a Hub download as fallback.
+    "onnxruntime>=1.16.0",
+    "silero-vad>=5.1",
 ]
 
 # Tools dependencies (for model conversion and downloading)

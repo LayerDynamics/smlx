@@ -81,6 +81,7 @@ def load_config(model_path: Path, sample_rate: int = 16000) -> VADConfig:
     # Use default config
     if sample_rate == 8000:
         from .config import DEFAULT_CONFIG_8K
+
         return DEFAULT_CONFIG_8K
     else:
         return DEFAULT_CONFIG_16K
@@ -167,9 +168,7 @@ def _convert_onnx_weights(onnx_path: str) -> dict:
         for initializer in onnx_model.graph.initializer
     }
     if not weights:
-        raise RuntimeError(
-            f"ONNX file '{onnx_path}' contains no initializer weights to convert."
-        )
+        raise RuntimeError(f"ONNX file '{onnx_path}' contains no initializer weights to convert.")
     return weights
 
 
@@ -206,6 +205,7 @@ def load(
 
     # Load weights if available
     weights = load_weights(model_path)
+    weights_loaded = False
 
     if weights:
         # Sanitize weights
@@ -214,6 +214,7 @@ def load(
         # Load into model
         try:
             model.load_weights(list(weights.items()))
+            weights_loaded = True
             print("Weights loaded successfully")
         except Exception as e:
             print(f"Warning: Could not load weights into model: {e}")
@@ -225,6 +226,10 @@ def load(
         print("  1. Download from https://github.com/snakers4/silero-vad")
         print("  2. Convert ONNX to MLX format")
         print("  3. Place in model directory")
+
+    # Expose whether real pretrained weights were loaded so callers (e.g. the
+    # unified runner) can honestly report output as trained vs pipeline-only.
+    model.weights_loaded = weights_loaded
 
     model.eval()
 

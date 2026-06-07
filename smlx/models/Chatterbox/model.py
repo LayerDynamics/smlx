@@ -132,17 +132,18 @@ class Attention(nn.Module):
         self.n_heads = n_heads = config.num_attention_heads
         self.n_kv_heads = n_kv_heads = (
             config.num_key_value_heads
-            if hasattr(config, 'num_key_value_heads') and config.num_key_value_heads is not None
+            if hasattr(config, "num_key_value_heads") and config.num_key_value_heads is not None
             else config.num_attention_heads
         )
 
         self.head_dim = head_dim = (
-            config.head_dim if hasattr(config, 'head_dim') and config.head_dim is not None
+            config.head_dim
+            if hasattr(config, "head_dim") and config.head_dim is not None
             else config.hidden_size // n_heads
         )
         self.scale = head_dim**-0.5
 
-        attention_bias = config.attention_bias if hasattr(config, 'attention_bias') else False
+        attention_bias = config.attention_bias if hasattr(config, "attention_bias") else False
 
         # Query, Key, Value projections
         self.q_proj = nn.Linear(dim, n_heads * head_dim, bias=attention_bias)
@@ -151,10 +152,12 @@ class Attention(nn.Module):
         self.o_proj = nn.Linear(n_heads * head_dim, dim, bias=attention_bias)
 
         # Rotary Position Embedding
-        rope_theta = config.rope_theta if hasattr(config, 'rope_theta') else 10000.0
-        rope_traditional = config.rope_traditional if hasattr(config, 'rope_traditional') else False
-        rope_scaling = config.rope_scaling if hasattr(config, 'rope_scaling') else None
-        max_pos = config.max_position_embeddings if hasattr(config, 'max_position_embeddings') else None
+        rope_theta = config.rope_theta if hasattr(config, "rope_theta") else 10000.0
+        rope_traditional = config.rope_traditional if hasattr(config, "rope_traditional") else False
+        rope_scaling = config.rope_scaling if hasattr(config, "rope_scaling") else None
+        max_pos = (
+            config.max_position_embeddings if hasattr(config, "max_position_embeddings") else None
+        )
 
         self.rope: nn.RoPE | NoPE = initialize_rope(
             self.head_dim,
@@ -211,7 +214,7 @@ class MLP(nn.Module):
 
         dim = config.hidden_size
         hidden_dim = config.intermediate_size
-        mlp_bias = config.mlp_bias if hasattr(config, 'mlp_bias') else False
+        mlp_bias = config.mlp_bias if hasattr(config, "mlp_bias") else False
 
         self.gate_proj = nn.Linear(dim, hidden_dim, bias=mlp_bias)
         self.down_proj = nn.Linear(hidden_dim, dim, bias=mlp_bias)
@@ -237,7 +240,7 @@ class TransformerBlock(nn.Module):
         self.self_attn = Attention(config)
         self.mlp = MLP(config)
 
-        rms_eps = config.rms_norm_eps if hasattr(config, 'rms_norm_eps') else 1e-5
+        rms_eps = config.rms_norm_eps if hasattr(config, "rms_norm_eps") else 1e-5
         self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=rms_eps)
         self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=rms_eps)
         self.config = config
@@ -299,16 +302,15 @@ class LlamaBackbone(nn.Module):
 
         # Transformer layers
         self.layers = [
-            TransformerBlock(config, use_sliding=False)
-            for _ in range(config.num_hidden_layers)
+            TransformerBlock(config, use_sliding=False) for _ in range(config.num_hidden_layers)
         ]
 
         # Final layer norm
-        rms_eps = config.rms_norm_eps if hasattr(config, 'rms_norm_eps') else 1e-5
+        rms_eps = config.rms_norm_eps if hasattr(config, "rms_norm_eps") else 1e-5
         self.norm = nn.RMSNorm(config.hidden_size, eps=rms_eps)
 
         # Optional: Disable RoPE for specified layers (NoPE feature)
-        if hasattr(config, 'no_rope_layers') and config.no_rope_layers is not None:
+        if hasattr(config, "no_rope_layers") and config.no_rope_layers is not None:
             for idx, use_rope in enumerate(config.no_rope_layers):
                 if not use_rope:
                     self.layers[idx].self_attn.rope = NoPE()
@@ -378,9 +380,7 @@ class VoiceEncoder(nn.Module):
 
         # Transformer layers
         self.encoder_layers = [
-            nn.TransformerEncoderLayer(
-                config.hidden_size, config.num_heads, config.hidden_size * 4
-            )
+            nn.TransformerEncoderLayer(config.hidden_size, config.num_heads, config.hidden_size * 4)
             for _ in range(config.num_layers)
         ]
 
@@ -432,16 +432,12 @@ class ExpressivenessModule(nn.Module):
         self.config = config
 
         # Emotion embeddings
-        self.emotion_embeddings = nn.Embedding(
-            config.num_emotions, config.emotion_embedding_dim
-        )
+        self.emotion_embeddings = nn.Embedding(config.num_emotions, config.emotion_embedding_dim)
 
         # Expressiveness projection
         self.expressiveness_proj = nn.Linear(1, config.emotion_embedding_dim)
 
-    def __call__(
-        self, emotion_id: mx.array = None, expressiveness: float = 0.5
-    ) -> mx.array:
+    def __call__(self, emotion_id: mx.array = None, expressiveness: float = 0.5) -> mx.array:
         """
         Get expressiveness embedding.
 
@@ -517,19 +513,15 @@ class Chatterbox(nn.Module):
             self.voice_encoder = VoiceEncoder(config.voice_encoder_config)
             # Project voice embedding to match hidden size
             self.voice_embedding_proj = nn.Linear(
-                config.voice_encoder_config.embedding_dim,
-                config.llama_config.hidden_size
+                config.voice_encoder_config.embedding_dim, config.llama_config.hidden_size
             )
 
         # Expressiveness module
         if config.use_expressiveness:
-            self.expressiveness_module = ExpressivenessModule(
-                config.expressiveness_config
-            )
+            self.expressiveness_module = ExpressivenessModule(config.expressiveness_config)
             # Project expressiveness embedding to match hidden size
             self.expressiveness_proj = nn.Linear(
-                config.expressiveness_config.emotion_embedding_dim,
-                config.llama_config.hidden_size
+                config.expressiveness_config.emotion_embedding_dim, config.llama_config.hidden_size
             )
 
         # Acoustic head (generate mel-spectrogram)
@@ -623,14 +615,30 @@ class Chatterbox(nn.Module):
         hidden_states = self.llama_backbone(
             input_embeddings=hidden_states,
             mask=None,  # Causal mask will be auto-created in LlamaBackbone
-            cache=cache
+            cache=cache,
         )
 
         # Generate mel-spectrogram
         mel = self.acoustic_head(hidden_states)
 
+        # The HiFi-GAN vocoder's stacked dilated convs have a minimum receptive
+        # field (~20 mel frames); a very short prompt yields fewer frames and the
+        # conv stack underflows. Vocode a copy padded on the time axis to a safe
+        # minimum so any prompt length works, then trim the waveform back to the
+        # audio that corresponds to the real (unpadded) frames — no fabricated
+        # tail, and the returned mel stays unpadded.
+        min_mel_frames = 32
+        orig_frames = mel.shape[1]
+        vocoder_mel = mel
+        if orig_frames < min_mel_frames:
+            vocoder_mel = mx.pad(mel, [(0, 0), (0, min_mel_frames - orig_frames), (0, 0)])
+
         # Generate waveform using HiFi-GAN vocoder
-        waveform = self.vocoder(mel)
+        waveform = self.vocoder(vocoder_mel)
+
+        if orig_frames < min_mel_frames:
+            hop = waveform.shape[1] // vocoder_mel.shape[1]  # samples per mel frame
+            waveform = waveform[:, : orig_frames * hop]
 
         return mel, waveform
 

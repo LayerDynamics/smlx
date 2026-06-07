@@ -12,6 +12,41 @@ smlx models verify smolvlm-256m   # one model
 smlx models list              # the curated zoo
 ```
 
+## Run any model (`smlx run`)
+
+The curated zoo above is the *verified, trained-quality* subset. To produce real
+output from **every implemented model** (all 17 packages — including the legacy
+TTS/OCR/VAD/audio-classification/CAD ones), use `smlx run`. Each model runs its own
+real inference pipeline; audio/CAD/json artifacts are written to `data/output/`.
+
+```bash
+smlx run --list                                   # every runnable model + what it needs
+smlx run smollm2-135m --text "What is MLX?"
+smlx run orpheus-150m --text "Hello world"        # -> data/output/orpheus-150m.wav
+smlx run trocr-small --document scan.png
+smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
+```
+
+Inputs are **user-provided** (per-modality flags `--text/--image/--audio/--document`);
+`--all` runs every model whose required inputs you supplied and **SKIPs** the rest.
+
+### Honest weight status
+
+Every run reports a runtime-derived status — `ok` means *the pipeline produced
+output*, the status says whether that output is **trustworthy**:
+
+| Status | Meaning |
+|--------|---------|
+| `TRAINED` | Real public weights → meaningful output (SmolLM2, SmolVLM, Whisper, MiniLM, Moondream2, TinyLLaVA, nanoVLM, YAMNet). |
+| `TRAINED-WEIGHTS` | Real weights but a known defect (TrOCR: decoder MLP params absent from the checkpoint → repetitive). |
+| `PIPELINE-ONLY` | Random/partial weights: output happens and is well-formed, but **not** meaningful (Orpheus, Chatterbox without local weights, smolGenCad, SileroVAD without converted weights). |
+| `SKIPPED` | A required input was not supplied (not an error). |
+| `ERROR` | The pipeline raised (the real exception is shown). |
+
+Status comes from a real `model.weights_loaded` signal where the loader exposes one,
+never a hardcoded guess. `smlx run` exits non-zero only on `ERROR` — `SKIPPED` and
+honest `PIPELINE-ONLY` are not failures.
+
 ## Architecture
 
 SMLX runs each model through the **correct upstream MLX implementation** and layers

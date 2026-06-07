@@ -86,7 +86,7 @@ def convert_pytorch_to_mlx(pytorch_path: Path) -> Dict:
     print(f"Converting PyTorch weights to MLX format...")
 
     # Load PyTorch state_dict
-    state_dict = torch.load(pytorch_path, map_location='cpu')
+    state_dict = torch.load(pytorch_path, map_location="cpu")
 
     # Get name mapping
     name_mapping = get_pytorch_to_mlx_mapping()
@@ -96,7 +96,7 @@ def convert_pytorch_to_mlx(pytorch_path: Path) -> Dict:
 
     for pytorch_key, pytorch_tensor in state_dict.items():
         # Skip PyTorch-specific tracking variables
-        if 'num_batches_tracked' in pytorch_key:
+        if "num_batches_tracked" in pytorch_key:
             continue
 
         # Map to MLX key
@@ -106,6 +106,13 @@ def convert_pytorch_to_mlx(pytorch_path: Path) -> Dict:
             # Convert PyTorch → NumPy → MLX
             numpy_array = pytorch_tensor.numpy()
             mlx_array = mx.array(numpy_array)
+
+            # Conv weights are 4-D: PyTorch is OIHW, MLX expects OHWI. Without
+            # this transpose the very first conv fails with a channel mismatch
+            # (e.g. weight (32,1,3,3) vs NHWC input). Applies to standard,
+            # depthwise, and pointwise convs alike (all 4-D).
+            if mlx_array.ndim == 4:
+                mlx_array = mlx_array.transpose(0, 2, 3, 1)
 
             mlx_weights[mlx_key] = mlx_array
 
@@ -152,7 +159,9 @@ def get_model_path(
             return Path(model_file).parent
 
         except ImportError:
-            print("Warning: huggingface_hub not available. Install with: pip install huggingface-hub")
+            print(
+                "Warning: huggingface_hub not available. Install with: pip install huggingface-hub"
+            )
             return None
         except Exception as e:
             print(f"Note: Could not load from HuggingFace Hub ({repo_id}): {e}")
@@ -309,9 +318,22 @@ def load(
     # Create model
     model = YAMNet(config)
 
-    # Apply weights
-    model.update(weights)
-    print(f"✓ Loaded YAMNet model with {len(weights)} weight tensors")
+    # Apply weights via load_weights with a valid-key filter: model.update() is
+    # strict and aborts if the converted checkpoint carries a key the module tree
+    # doesn't expose (e.g. BatchNorm running stats addressed differently in MLX).
+    # Filter to the keys the model actually has so the real conv/BN weights load
+    # instead of erroring out to random weights; report any uncovered params.
+    from mlx.utils import tree_flatten
+
+    valid_keys = {k for k, _ in tree_flatten(model.parameters())}
+    valid_keys |= {k for k, _ in tree_flatten(model.state)}
+    to_load = [(k, v) for k, v in weights.items() if k in valid_keys]
+    model.load_weights(to_load, strict=False)
+    missing = sorted(valid_keys - {k for k, _ in to_load})
+    if missing:
+        print(f"  ⚠ {len(missing)} model params not in checkpoint, e.g. {missing[:4]}")
+    model.weights_loaded = True
+    print(f"✓ Loaded YAMNet model: applied {len(to_load)}/{len(weights)} weight tensors")
 
     # Set to eval mode
     model.eval()
