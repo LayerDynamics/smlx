@@ -412,6 +412,110 @@ def data_eval(benchmark, model, eval_args):
     mod.main()
 
 
+@cli.group()
+def models():
+    """Inspect and verify the curated model zoo (runs on the upstream backend).
+
+    \b
+    smlx models list                  # the curated zoo
+    smlx models verify                # load + run + check real output for every model
+    smlx models verify smolvlm-256m   # just one
+    """
+    pass
+
+
+@models.command(name="list")
+def models_list():
+    """List the curated zoo (alias, backend, modality, params)."""
+    from smlx.models import mlx_backend as backend
+
+    header = f"{'ALIAS':<16} {'BACKEND':<8} {'MODALITY':<10} {'PARAMS':<7} REPO"
+    click.echo(header)
+    click.echo("-" * len(header))
+    for entry in backend.ZOO.values():
+        click.echo(
+            f"{entry.key:<16} {entry.backend.value.replace('mlx_',''):<8} "
+            f"{entry.modality:<10} {entry.params:<7} {entry.repo}"
+        )
+
+
+def _looks_like_real_text(text: str, min_words: int = 3) -> bool:
+    """Lightweight real-output check (CLI cannot import the test assertions)."""
+    import re
+
+    words = re.findall(r"[A-Za-z]{2,}", text or "")
+    if len(words) < min_words:
+        return False
+    from collections import Counter
+
+    lowered = [w.lower() for w in words]
+    _, top = Counter(lowered).most_common(1)[0]
+    return top / len(lowered) < 0.6  # not degenerate repetition
+
+
+@models.command(name="verify")
+@click.argument("model", required=False)
+@click.option("--quantize", "-q", default=None, help="Verify with SMLX quantization (4bit/8bit)")
+@click.option("--max-tokens", "-t", type=int, default=40, help="Tokens to generate per check")
+def models_verify(model, quantize, max_tokens):
+    """Load each model through its backend, run it, and assert real output.
+
+    Exits non-zero if any verified model fails to produce coherent output.
+    """
+    import time
+
+    from smlx.models import mlx_backend as backend
+
+    targets = [model.lower()] if model else list(backend.ZOO.keys())
+    unknown = [t for t in targets if t not in backend.ZOO]
+    if unknown:
+        click.echo(f"Unknown model(s): {unknown}. Try: smlx models list", err=True)
+        sys.exit(2)
+
+    # A bundled image for VLM checks (optional).
+    image_path = None
+    try:
+        from smlx.data import local
+
+        if local.is_available("coco8"):
+            tree = local.load("coco8", split="train")
+            image_path = str(tree.images[0])
+    except Exception:
+        image_path = None
+
+    failures = 0
+    click.echo(f"{'MODEL':<16} {'RESULT':<7} {'tok/s':>7}  OUTPUT")
+    click.echo("-" * 72)
+    for key in targets:
+        entry = backend.ZOO[key]
+        try:
+            bm = backend.load(key, quantize=quantize)
+            prompt = (
+                "What is in this image?"
+                if entry.modality == "vlm"
+                else "In one sentence, what is MLX?"
+            )
+            img = image_path if entry.modality == "vlm" else None
+            t0 = time.perf_counter()
+            out = backend.generate(bm, prompt, image=img, max_tokens=max_tokens)
+            dt = time.perf_counter() - t0
+            ok = _looks_like_real_text(out)
+            n_words = len((out or "").split())
+            tps = n_words / dt if dt > 0 else 0.0
+            snippet = " ".join((out or "").split())[:48]
+            click.echo(f"{key:<16} {'PASS' if ok else 'FAIL':<7} {tps:>7.1f}  {snippet}")
+            if not ok:
+                failures += 1
+        except Exception as e:
+            click.echo(f"{key:<16} {'ERROR':<7} {'-':>7}  {type(e).__name__}: {str(e)[:40]}")
+            failures += 1
+
+    click.echo("-" * 72)
+    click.echo(f"{len(targets) - failures}/{len(targets)} models produced real output.")
+    if failures:
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     cli()
