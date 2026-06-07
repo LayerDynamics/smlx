@@ -54,18 +54,28 @@ The named target zoo spans seven modalities. Verified today:
 
 - ✅ **Language**, ✅ **Vision-language**, ✅ **ASR**, ✅ **Embeddings** — in the zoo above.
 
-Not yet verified (honest status — **not** dropped, just not done):
+Pipeline-verified (**output happens** end to end) but **not** trained-quality —
+the generation path runs and emits real, well-formed output; the *content* is the
+remaining gap, not the plumbing:
 
-- ⛔ **TTS** (Orpheus, Chatterbox) — gated on real public weights.
-- ⛔ **OCR** (TrOCR, Donut) — TrOCR's custom DeiT/BART encoder has a residual
-  numerics bug; the intended path is a dedicated OCR model via mlx-vlm
-  (florence2 / deepseek-ocr) using the same backend pattern.
+- 🟡 **TTS** (Orpheus) — `synthesize()` produces a finite audio waveform
+  (`np.ndarray`, shape `(samples,)`); with the bundled random-init weights it is
+  honestly labelled noise, not speech. Covered by
+  `tests/integration/test_orpheus.py::test_basic_synthesis`.
+- 🟡 **OCR** (TrOCR) — `load("printed")` + `recognize()` runs with real
+  `microsoft/trocr-small-printed` weights and returns a decoded string. A residual
+  decoder weight-mapping gap (75 MLP params absent from the checkpoint) makes the
+  text repetitive, so content isn't yet correct. Covered by
+  `tests/integration/test_trocr_small.py::{test_printed_model_loading,test_basic_recognition}`.
+  (Loader bug fixed here: short variant names like `"printed"` were passed raw to
+  the tokenizer instead of resolving to the HF repo id.)
 - 🟡 **CAD** (smolGenCad) — SMLX-native ~147M text-to-CAD model. The **generation
   pipeline is verified to produce real, well-formed output** end to end (a valid
   CAD command sequence + parseable CadQuery Python + JSON), covered by
   `tests/models/smolGenCad/test_generate.py`. It ships with **random-initialised
-  weights** (no public checkpoint), so the CAD *content* is not yet meaningful —
-  trained-quality correctness is the remaining gap, not the pipeline.
+  weights** (no public checkpoint), so the CAD *content* is not yet meaningful.
+
+Fully blocked (no public weights at all): **Chatterbox** (TTS), **Donut** (OCR).
 
 ## Quantization (SMLX value-add)
 

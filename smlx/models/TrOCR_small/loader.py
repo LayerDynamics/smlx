@@ -17,6 +17,16 @@ from .config import TrOCRConfig, create_config_from_dict
 from .model import TrOCR
 from .processor import TrOCRProcessor
 
+# Short variant names -> canonical HuggingFace repo IDs. Used for both the
+# weight download (get_model_path) and the tokenizer/processor construction in
+# load(); an unknown name passes through unchanged (treated as a raw repo id).
+_REPO_MAP = {
+    "trocr-small-printed": "microsoft/trocr-small-printed",
+    "trocr-small-handwritten": "microsoft/trocr-small-handwritten",
+    "printed": "microsoft/trocr-small-printed",
+    "handwritten": "microsoft/trocr-small-handwritten",
+}
+
 
 def get_model_path(
     model_name: str = "microsoft/trocr-small-printed",
@@ -38,15 +48,7 @@ def get_model_path(
             "huggingface_hub is required. Install with: pip install huggingface-hub"
         ) from e
 
-    # Map short names to HuggingFace repo IDs
-    repo_map = {
-        "trocr-small-printed": "microsoft/trocr-small-printed",
-        "trocr-small-handwritten": "microsoft/trocr-small-handwritten",
-        "printed": "microsoft/trocr-small-printed",
-        "handwritten": "microsoft/trocr-small-handwritten",
-    }
-
-    repo_id = repo_map.get(model_name, model_name)
+    repo_id = _REPO_MAP.get(model_name, model_name)
 
     # Download model
     try:
@@ -291,8 +293,10 @@ def load(
     # Set to eval mode
     model.eval()
 
-    # Create processor with model_name for correct tokenizer
-    processor = TrOCRProcessor(config, model_name=model_name)
+    # Create processor with the *resolved* repo id so the tokenizer loads from
+    # the real HF repo — a short variant name like "printed" is not a valid repo
+    # id and would otherwise fail the (intentionally strict) tokenizer load.
+    processor = TrOCRProcessor(config, model_name=_REPO_MAP.get(model_name, model_name))
 
     return model, processor
 
