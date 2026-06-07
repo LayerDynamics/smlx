@@ -100,8 +100,19 @@ def map_weight_names(weights: dict) -> dict:
     for key, value in weights.items():
         new_key = key
 
-        # Skip embeddings that we don't use (cls_token, distillation_token)
-        if "cls_token" in key or "distillation_token" in key:
+        # DeiT encoder uses CLS + distillation tokens (prepended to the patch
+        # sequence). They MUST be loaded — skipping them (and leaving them random)
+        # corrupts the encoder. Map them onto our encoder module.
+        if "cls_token" in key:
+            mapped_weights["encoder.cls_token"] = value
+            continue
+        if "distillation_token" in key:
+            mapped_weights["encoder.distillation_token"] = value
+            continue
+
+        # Patch-embedding Conv2d: PyTorch (out, in, kH, kW) -> MLX (out, kH, kW, in).
+        if "patch_embeddings.projection.weight" in key:
+            mapped_weights["encoder.patch_embed.weight"] = mx.transpose(value, (0, 2, 3, 1))
             continue
 
         # Encoder mappings
@@ -112,7 +123,9 @@ def map_weight_names(weights: dict) -> dict:
             )
 
             # Position embeddings: encoder.embeddings.position_embeddings -> encoder.position_embeddings
-            new_key = new_key.replace("encoder.embeddings.position_embeddings", "encoder.position_embeddings")
+            new_key = new_key.replace(
+                "encoder.embeddings.position_embeddings", "encoder.position_embeddings"
+            )
 
             # Layer mappings: encoder.encoder.layer.N -> encoder.layers.N
             new_key = new_key.replace("encoder.encoder.layer.", "encoder.layers.")
@@ -256,20 +269,19 @@ def load(
     if model_path:
         weights = load_weights(model_path)
         if weights:
-            # Apply weights (use strict=False to handle non-parameter arrays)
-            model.update(weights, strict=False)
+            # Load via load_weights (the API that actually applies flat dotted-key
+            # weights — model.update() silently drops many of them). Filter to the
+            # keys that exist as model parameters so an orphan/renamed key can't
+            # abort the whole load; report any model params left uncovered.
+            from mlx.utils import tree_flatten
 
-            # Manually set non-parameter arrays (like position_embeddings)
-            # Note: HuggingFace BEiT has 578 positions (576 patches + 2 special tokens)
-            # but TrOCR only uses the patch positions, so we slice to match
-            if "encoder.position_embeddings" in weights:
-                pos_emb = weights["encoder.position_embeddings"]
-                num_patches = config.vision_config.num_patches
-                # Slice to remove CLS and distillation tokens if present
-                if pos_emb.shape[1] > num_patches:
-                    pos_emb = pos_emb[:, :num_patches, :]
-                model.encoder.position_embeddings = pos_emb
+            valid_keys = {k for k, _ in tree_flatten(model.parameters())}
+            to_load = [(k, v) for k, v in weights.items() if k in valid_keys]
+            model.load_weights(to_load, strict=False)
 
+            missing = sorted(valid_keys - {k for k, _ in to_load})
+            if missing:
+                print(f"Warning: {len(missing)} model params not in checkpoint, e.g. {missing[:5]}")
             print(f"Loaded TrOCR weights from {model_path}")
         else:
             print("Warning: No weights found. Using random initialization.")

@@ -125,12 +125,16 @@ def test_all_minilm_l6_v2_semantic(semantic_sentences):
 
 def test_trocr_small_reads_text():
     pytest.skip(
-        "WS-2: TrOCR-small loads REAL microsoft/trocr-small-printed weights (not random) "
-        "but the decoder emits gibberish on a clean 'HELLO' image. Red flag at load: "
-        "'Updating vocab size from config (64044) to tokenizer (64002)' — a 42-token "
-        "mismatch that misaligns the decoder embedding/lm_head. Fix the vocab/tokenizer "
-        "reconciliation (and verify encoder->decoder cross-attention) against the HF "
-        "VisionEncoderDecoder/TrOCR reference, then assert OCR matches the rendered text."
+        "WS-2 (in progress): fixed 8 confirmed bugs vs the HF reference — decoder start "
+        "token (eos/2 not bos/0), DeiT cls+distillation tokens, position-embedding slicing, "
+        "patch-conv transpose, weight loading (model.update silently dropped weights -> "
+        "load_weights), decoder config keys (BART d_model=256/decoder_attention_heads=8/"
+        "decoder_layers=6/decoder_ffn_dim=1024, not hidden_size/num_heads), cross-attn "
+        "kv_dim (encoder 384 -> decoder 256), and BART position embeddings (514, +2 offset). "
+        "The model now runs end-to-end without errors. Remaining: the encoder transformer "
+        "output still correlates only ~0.10 with the HF encoder, so at least one more "
+        "encoder bug (patch-embed numerics or attention) needs layer-by-layer activation "
+        "comparison before OCR is correct."
     )
 
 

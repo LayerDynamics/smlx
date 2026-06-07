@@ -18,6 +18,25 @@ from .model import TrOCR
 from .processor import TrOCRProcessor
 
 
+def _decoder_start_token_id(model: TrOCR, processor: TrOCRProcessor) -> int:
+    """Return the token id the decoder starts generation from.
+
+    TrOCR (like other VisionEncoderDecoder models) begins decoding from
+    ``decoder_start_token_id``, which is the </s>/eos token (id 2), not the bos
+    token (id 0). Prefer an explicit config value, then the decoder's eos.
+    """
+    cfg = getattr(model, "config", None)
+    explicit = getattr(cfg, "decoder_start_token_id", None)
+    if explicit is not None:
+        return int(explicit)
+    dec = getattr(cfg, "decoder", None)
+    dec_start = getattr(dec, "decoder_start_token_id", None) if dec is not None else None
+    if dec_start is not None:
+        return int(dec_start)
+    eos = getattr(processor.tokenizer, "eos_token_id", None)
+    return int(eos) if eos is not None else 2
+
+
 def generate_text(
     model: TrOCR,
     processor: TrOCRProcessor,
@@ -42,11 +61,13 @@ def generate_text(
     # Encode image
     encoder_hidden_states = model.encode(pixel_values)
 
-    # Start with BOS token
-    bos_token_id = processor.tokenizer.bos_token_id
+    # TrOCR autoregressive decoding starts from the decoder_start_token_id, which
+    # for TrOCR is the </s>/eos token (id 2) — NOT the bos token (id 0). Starting
+    # from bos produces garbage (the model was trained to begin after </s>).
+    start_token_id = _decoder_start_token_id(model, processor)
     eos_token_id = processor.tokenizer.eos_token_id
 
-    input_ids = mx.array([[bos_token_id]])
+    input_ids = mx.array([[start_token_id]])
 
     # Autoregressive generation
     for _ in range(max_length):
@@ -117,9 +138,7 @@ def recognize(
     pixel_values = processor.process_image(image)
 
     # Generate text
-    text = generate_text(
-        model, processor, pixel_values, max_length, num_beams, temperature
-    )
+    text = generate_text(model, processor, pixel_values, max_length, num_beams, temperature)
 
     return text
 
@@ -179,11 +198,11 @@ def recognize_with_confidence(
     # Encode image
     encoder_hidden_states = model.encode(pixel_values)
 
-    # Generate with confidence tracking
-    bos_token_id = processor.tokenizer.bos_token_id
+    # Generate with confidence tracking (start from the decoder_start token, id 2)
+    start_token_id = _decoder_start_token_id(model, processor)
     eos_token_id = processor.tokenizer.eos_token_id
 
-    input_ids = mx.array([[bos_token_id]])
+    input_ids = mx.array([[start_token_id]])
     confidences = []
 
     for _ in range(max_length):

@@ -24,15 +24,19 @@ class Attention(nn.Module):
         dims: int,
         num_heads: int,
         dropout: float = 0.0,
+        kv_dim: Optional[int] = None,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.dims = dims
         self.scale = (dims // num_heads) ** -0.5
 
+        # kv_dim differs from dims for cross-attention, where keys/values come
+        # from the encoder (e.g. TrOCR encoder hidden 384 -> decoder hidden 256).
+        kv = kv_dim if kv_dim is not None else dims
         self.q_proj = nn.Linear(dims, dims)
-        self.k_proj = nn.Linear(dims, dims)
-        self.v_proj = nn.Linear(dims, dims)
+        self.k_proj = nn.Linear(kv, dims)
+        self.v_proj = nn.Linear(kv, dims)
         self.out_proj = nn.Linear(dims, dims)
         self.dropout = nn.Dropout(dropout)
 
@@ -139,14 +143,17 @@ class VisionEncoder(nn.Module):
             stride=config.patch_size,
         )
 
-        # Position embeddings
+        # DeiT special tokens prepended to the patch sequence: a CLS token and a
+        # distillation token. The trained position embeddings therefore cover
+        # (num_patches + 2) positions, and dropping these tokens (or leaving the
+        # position embeddings unloaded) corrupts the encoder output.
         num_patches = config.num_patches
-        self.position_embeddings = mx.zeros((1, num_patches, config.hidden_size))
+        self.cls_token = mx.zeros((1, 1, config.hidden_size))
+        self.distillation_token = mx.zeros((1, 1, config.hidden_size))
+        self.position_embeddings = mx.zeros((1, num_patches + 2, config.hidden_size))
 
         # Transformer layers
-        self.layers = [
-            TransformerEncoderLayer(config) for _ in range(config.num_hidden_layers)
-        ]
+        self.layers = [TransformerEncoderLayer(config) for _ in range(config.num_hidden_layers)]
 
         # Final layer norm
         self.ln = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -158,7 +165,7 @@ class VisionEncoder(nn.Module):
             pixel_values: Images (batch, height, width, channels) in MLX NHWC format
 
         Returns:
-            Encoded features (batch, num_patches, hidden_size)
+            Encoded features (batch, num_patches + 2, hidden_size)
         """
         # Patch embeddings
         x = self.patch_embed(pixel_values)  # (B, H, W, hidden_size)
@@ -167,7 +174,12 @@ class VisionEncoder(nn.Module):
         B, H, W, D = x.shape
         x = x.reshape(B, H * W, D)  # (B, num_patches, hidden_size)
 
-        # Add position embeddings
+        # Prepend the CLS and distillation tokens (DeiT), then add position embeddings.
+        cls = mx.broadcast_to(self.cls_token, (B, 1, D))
+        dist = mx.broadcast_to(self.distillation_token, (B, 1, D))
+        x = mx.concatenate([cls, dist, x], axis=1)  # (B, num_patches + 2, hidden_size)
+
+        # Add position embeddings (covers num_patches + 2 positions)
         x = x + self.position_embeddings
 
         # Transformer layers
@@ -183,7 +195,7 @@ class VisionEncoder(nn.Module):
 class TransformerDecoderLayer(nn.Module):
     """Transformer decoder layer for text decoder."""
 
-    def __init__(self, config: TrOCRDecoderConfig):
+    def __init__(self, config: TrOCRDecoderConfig, encoder_hidden_size: Optional[int] = None):
         super().__init__()
 
         # Self-attention
@@ -193,11 +205,14 @@ class TransformerDecoderLayer(nn.Module):
             config.attention_probs_dropout_prob,
         )
 
-        # Cross-attention (encoder-decoder attention)
+        # Cross-attention (encoder-decoder attention). Keys/values come from the
+        # encoder, whose hidden size (e.g. 384) differs from the decoder's (256),
+        # so the cross-attn k/v projections must accept encoder_hidden_size.
         self.cross_attn = Attention(
             config.hidden_size,
             config.num_attention_heads,
             config.attention_probs_dropout_prob,
+            kv_dim=encoder_hidden_size if encoder_hidden_size is not None else config.hidden_size,
         )
 
         # MLP
@@ -247,24 +262,28 @@ class TextDecoder(nn.Module):
     Generates text autoregressively from vision encoder features.
     """
 
-    def __init__(self, config: TrOCRDecoderConfig):
+    def __init__(self, config: TrOCRDecoderConfig, encoder_hidden_size: Optional[int] = None):
         super().__init__()
         self.config = config
 
         # Token embeddings
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
 
-        # Position embeddings
+        # Position embeddings. This is a BART-style decoder: positions are offset
+        # by 2 (positions 0/1 are reserved), so the learned table holds
+        # (max_position_embeddings + 2) entries — e.g. 514 for trocr-small.
+        self.position_offset = 2
         self.position_embedding = nn.Embedding(
-            config.max_position_embeddings, config.hidden_size
+            config.max_position_embeddings + self.position_offset, config.hidden_size
         )
 
         # Layer norm after embeddings (RoBERTa style)
         self.ln_embedding = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        # Transformer decoder layers
+        # Transformer decoder layers (cross-attn keyed on the encoder hidden size)
         self.layers = [
-            TransformerDecoderLayer(config) for _ in range(config.num_hidden_layers)
+            TransformerDecoderLayer(config, encoder_hidden_size=encoder_hidden_size)
+            for _ in range(config.num_hidden_layers)
         ]
 
         # Final layer norm
@@ -289,8 +308,8 @@ class TextDecoder(nn.Module):
         # Token embeddings
         x = self.token_embedding(input_ids)
 
-        # Position embeddings
-        positions = mx.arange(L)[None, :]
+        # Position embeddings with BART's +2 offset (positions 0/1 are reserved).
+        positions = (mx.arange(L) + self.position_offset)[None, :]
         x = x + self.position_embedding(positions)
 
         # Layer norm after embeddings
@@ -324,11 +343,15 @@ class TrOCR(nn.Module):
         # Vision encoder
         self.encoder = VisionEncoder(config.vision_config)
 
-        # Text decoder
-        self.decoder = TextDecoder(config.decoder_config)
+        # Text decoder (cross-attention keyed on the encoder's hidden size)
+        self.decoder = TextDecoder(
+            config.decoder_config, encoder_hidden_size=config.vision_config.hidden_size
+        )
 
         # Language model head
-        self.lm_head = nn.Linear(config.decoder_config.hidden_size, config.decoder_config.vocab_size)
+        self.lm_head = nn.Linear(
+            config.decoder_config.hidden_size, config.decoder_config.vocab_size
+        )
 
     def encode(self, pixel_values: mx.array) -> mx.array:
         """Encode image to features.
