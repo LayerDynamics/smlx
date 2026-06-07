@@ -130,12 +130,23 @@ def create_config_from_dict(config_dict: dict) -> TrOCRConfig:
 
     # Extract decoder config (support both decoder_config and decoder for backwards compat)
     decoder_dict = config_dict.get("decoder_config", config_dict.get("decoder", {}))
+    # The TrOCR decoder is a BART-style decoder: HF stores its dims under
+    # d_model / decoder_attention_heads / decoder_layers / decoder_ffn_dim (NOT
+    # hidden_size / num_attention_heads / num_hidden_layers). Read those keys
+    # first so the decoder is built with the correct shapes (256/8/6/1024 for
+    # trocr-small), falling back to the generic names for other checkpoints.
     decoder_config = TrOCRDecoderConfig(
         vocab_size=decoder_dict.get("vocab_size", 64044),
-        hidden_size=decoder_dict.get("hidden_size", 384),
-        num_hidden_layers=decoder_dict.get("num_hidden_layers", 6),
-        num_attention_heads=decoder_dict.get("num_attention_heads", 6),
-        intermediate_size=decoder_dict.get("intermediate_size", 1536),
+        hidden_size=decoder_dict.get("d_model", decoder_dict.get("hidden_size", 256)),
+        num_hidden_layers=decoder_dict.get(
+            "decoder_layers", decoder_dict.get("num_hidden_layers", 6)
+        ),
+        num_attention_heads=decoder_dict.get(
+            "decoder_attention_heads", decoder_dict.get("num_attention_heads", 8)
+        ),
+        intermediate_size=decoder_dict.get(
+            "decoder_ffn_dim", decoder_dict.get("intermediate_size", 1024)
+        ),
         max_position_embeddings=decoder_dict.get("max_position_embeddings", 512),
         bos_token_id=decoder_dict.get("bos_token_id", 0),
         eos_token_id=decoder_dict.get("eos_token_id", 2),

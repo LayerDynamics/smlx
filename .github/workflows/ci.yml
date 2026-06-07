@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_model_verify:
+        description: "Run the full model-verify perf gate (downloads several GB of models)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint + format — fast, no MLX / Apple Silicon needed.
+  #
+  # Scoped to the verified-core surface (the backend zoo, inclusion policy, CLI,
+  # and the smoke/packaging/inclusion tests). The wider legacy tree carries
+  # substantial pre-existing lint debt (~1000 ruff findings) that predates this
+  # effort; gating it here would make CI red on day one without signal. New work
+  # on the core must stay clean; whole-repo cleanup is tracked separately.
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      CORE: >-
+        smlx/models/mlx_backend.py
+        smlx/config/inclusion_policy.py
+        smlx/main.py
+        tests/smoke/
+        tests/test_inclusion_policy.py
+        tests/test_packaging.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lint tools
+        run: pip install ruff black
+      - name: Ruff (verified-core surface)
+        run: ruff check $CORE
+      - name: Black (verified-core surface, check only)
+        run: black --check $CORE
+
+  # ---------------------------------------------------------------------------
+  # Unit tests — Apple Silicon (MLX requires it). Scoped to the verified-core
+  # test suites (inclusion policy + packaging regression), which run hermetically
+  # with no model downloads under the strict pytest.ini (filterwarnings=error,
+  # 60s timeouts). The wider legacy test tree has pre-existing failures/warnings
+  # that predate this effort; the real end-to-end guarantee is the model-verify
+  # job below.
+  # ---------------------------------------------------------------------------
+  unit:
+    runs-on: macos-14 # Apple Silicon (M1) runner
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package (core)
+        run: pip install -e ".[dev]"
+      - name: Core unit tests (hermetic, no model downloads)
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
+        run: |
+          python -m pytest -q \
+            tests/test_inclusion_policy.py \
+            tests/test_packaging.py
+
+  # ---------------------------------------------------------------------------
+  # Model verify + perf gate — heavy (downloads the multi-GB curated zoo).
+  # Manual dispatch only: the speed floors in inclusion_policy are calibrated on
+  # an M4, whereas GitHub's macos-14 runners are slower M1s on shared hardware,
+  # so --enforce-perf failures there would reflect the runner, not a regression.
+  # Run it on demand from the Actions tab (run_model_verify=true) on an M4-class
+  # machine; the floors are the authoritative gate locally.
+  # ---------------------------------------------------------------------------
+  model-verify:
+    runs-on: macos-14
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.run_model_verify
+    needs: [lint, unit]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: pip install -e .
+      - name: Verify the curated zoo (real output + perf floor)
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: smlx models verify --enforce-perf

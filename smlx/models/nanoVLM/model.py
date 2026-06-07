@@ -21,6 +21,7 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 # Import diagnostics for debugging
 from smlx.utils.vlm_diagnostics import (
@@ -154,62 +155,35 @@ class NanoVLM(nn.Module):
         batch_size, sequence_length, embed_dim = text_embeds.shape
         num_vision_tokens = vision_embeds.shape[1]
 
-        # Scale vision features to match text embedding magnitude
-        # Using 0.15 factor brings vision std from ~6.6 to ~1.0 (ratio ~7-9x instead of ~88x)
-        # This balances vision/text features while avoiding repetition from too-weak vision
-        vision_scale_factor = 0.15
-        vision_embeds = vision_embeds * vision_scale_factor
-
-        # Create final embedding tensor
-        final_embedding = mx.zeros(
-            (batch_size, sequence_length, embed_dim), dtype=text_embeds.dtype
-        )
-
-        # Create masks to identify image tokens, text tokens
+        # No scaling: the trained modality projector already maps vision features
+        # into the language embedding space. huggingface/nanoVLM applies NO scaling
+        # at merge time — an extra factor (a previous 0.15 hack) corrupts the
+        # vision/text balance and produces generic/hallucinated descriptions.
         image_token_id = self.config.image_token_id
-        image_mask = input_ids == image_token_id  # Shape: (batch_size, sequence_length)
-        text_mask = input_ids != image_token_id  # Shape: (batch_size, sequence_length)
+        vision_embeds = vision_embeds.astype(text_embeds.dtype)
+        ids = np.array(input_ids)
 
-        # Expand masks to match embedding dimension
-        text_mask_expanded = mx.expand_dims(text_mask, -1)  # (batch, seq, 1)
-        text_mask_expanded = mx.repeat(
-            text_mask_expanded, embed_dim, axis=-1
-        )  # (batch, seq, embed_dim)
+        # Reference merge (updated_token_embd[mask] = image_embd.view(-1, dim)):
+        # place the j-th vision embedding at the j-th <image> token position, in
+        # order — works wherever the image tokens sit (not just a leading block).
+        rows = []
+        for b in range(batch_size):
+            row = text_embeds[b]  # (seq, dim) — text positions keep their embeddings
+            positions = np.where(ids[b] == image_token_id)[0].tolist()
+            if positions:
+                if len(positions) != num_vision_tokens:
+                    raise ValueError(
+                        f"nanoVLM merge: {len(positions)} <image> token positions != "
+                        f"{num_vision_tokens} vision embeddings. prepare_inputs must insert "
+                        f"exactly num_vision_tokens (={num_vision_tokens}) image tokens."
+                    )
+                idx = mx.broadcast_to(
+                    mx.array(positions).reshape(-1, 1), (len(positions), embed_dim)
+                )
+                row = mx.put_along_axis(row, idx, vision_embeds[b], axis=0)
+            rows.append(row[None])
 
-        image_mask_expanded = mx.expand_dims(image_mask, -1)  # (batch, seq, 1)
-        image_mask_expanded = mx.repeat(
-            image_mask_expanded, embed_dim, axis=-1
-        )  # (batch, seq, embed_dim)
-
-        # Insert text embeddings for text tokens
-        final_embedding = mx.where(text_mask_expanded, text_embeds, final_embedding)
-
-        # Pad vision embeddings to match sequence length and insert for image tokens
-        pad_size = sequence_length - num_vision_tokens
-        vision_embeds_padded = mx.pad(vision_embeds, ((0, 0), (0, pad_size), (0, 0)))
-
-        # Insert vision embeddings for image tokens
-        final_embedding = mx.where(image_mask_expanded, vision_embeds_padded, final_embedding)
-
-        if DEBUG:
-            # Count how many image tokens were replaced
-            num_image_tokens = int(mx.sum(image_mask))
-            logger.debug(f"Replaced {num_image_tokens} image tokens with vision embeddings")
-            # Log final embedding stats (can't use boolean indexing in MLX)
-            logger.debug(
-                f"final_vision_embeds - mean: {float(mx.mean(vision_embeds)):.4f}, "
-                f"std: {float(mx.std(vision_embeds)):.4f}"
-            )
-            logger.debug(
-                f"final_text_embeds - mean: {float(mx.mean(text_embeds)):.4f}, "
-                f"std: {float(mx.std(text_embeds)):.4f}"
-            )
-            logger.debug(
-                f"final_combined_embeds - mean: {float(mx.mean(final_embedding)):.4f}, "
-                f"std: {float(mx.std(final_embedding)):.4f}"
-            )
-
-        return final_embedding
+        return mx.concatenate(rows, axis=0)
 
     def create_attention_mask(self, input_ids: mx.array, has_image: bool = True) -> mx.array:
         """

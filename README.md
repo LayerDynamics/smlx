@@ -66,34 +66,34 @@ Built-in benchmarks for:
 
 ### Language Models (LLMs)
 
-- **SmolLM2-135M** ✓ - Lightweight language model with chat support
-- **SmolLM2-360M** ✓ - Larger variant with improved capabilities
-- **Chatterbox** (planned) - Chat-optimized model
+The **curated zoo** below is verified end to end by `smlx models verify` — every
+entry loads, runs, and produces real (coherent / correct) output. See
+[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md) for the live board and tok/s.
+
+- **SmolLM2-135M / -360M / -1.7B** ✓ — chat-capable language models (mlx-lm)
+- **Qwen2.5-0.5B-Instruct** ✓ — 4-bit language model (mlx-lm)
 
 ### Vision-Language Models (VLMs)
 
-- **SmolVLM-256M-Instruct** ✓ - Compact vision-language understanding
-- **SmolVLM-500M-Instruct** ✓ - Enhanced multimodal capabilities
-- **Moondream2** ✓ - Efficient visual question answering
-- **TinyLLaVA** ✓ - Compact LLaVA variant
-- **nanoVLM** (planned) - Ultra-lightweight VLM
+- **SmolVLM-256M / -500M-Instruct** ✓ — compact vision-language understanding (mlx-vlm)
+- **SmolVLM2-2.2B-Instruct** ✓ — larger multimodal model (mlx-vlm)
+- **Qwen2-VL-2B-Instruct** ✓ — 4-bit VLM (mlx-vlm)
 
 ### Audio Models
 
-- **Whisper-tiny** ✓ - Lightweight speech recognition with streaming
-- **Silero VAD** ✓ - Voice activity detection
-- **YAMNet** ✓ - Audio event classification
-- **Orpheus-150M** (planned) - Audio generation
-
-### Document Models
-
-- **TrOCR-small** ✓ - Optical character recognition (printed/handwritten)
-- **Donut-base** (planned) - Document understanding
+- **Whisper-tiny** ✓ — speech recognition (SMLX-native MLX impl)
 
 ### Embedding Models
 
-- **MiniLM** ✓ - Efficient text embeddings
-- **all-MiniLM-L6-v2** ✓ - Sentence embeddings
+- **MiniLM / all-MiniLM-L6-v2** ✓ — sentence embeddings (SMLX-native MLX impl)
+
+### Not yet in the verified zoo
+
+Legacy hand-written implementations exist for **Moondream2, TinyLLaVA, nanoVLM,
+TrOCR-small, Donut-base, Orpheus-150M (TTS), Chatterbox (TTS), YAMNet, Silero VAD**.
+Some are correct and some have known forward-path issues — they are not yet covered
+by `smlx models verify` and are documented in
+[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md). Prefer the curated zoo above.
 
 ## Installation
 
@@ -126,97 +126,66 @@ pip install -e ".[server]"       # API server
 
 ## Quick Start
 
-### Basic Text Generation
+SMLX gives you **one API** over a curated zoo of verified small models. Each model
+runs through its correct upstream MLX implementation (mlx-lm / mlx-vlm), and SMLX's
+quantization applies on top. See [`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md) for the
+full verified board (10/10 models pass `smlx models verify`).
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load, generate
 
-# Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-
-# Generate text
-prompt = "Explain quantum computing in simple terms:"
-output = generate(model, tokenizer, prompt, max_tokens=100)
-print(output)
-```
-
-### Streaming Chat
-
-```python
-from smlx.models.SmolLM2_135M import load, chat
-
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-
-messages = [
-    {"role": "user", "content": "What is machine learning?"}
-]
-
-# Stream response
-for chunk in chat(model, tokenizer, messages, stream=True):
-    print(chunk, end="", flush=True)
+# Any zoo alias — auto-routes to the right backend
+m = load("smollm2-360m")
+print(generate(m, "Explain quantum computing in simple terms.", max_tokens=100))
 ```
 
 ### Vision-Language Understanding
 
 ```python
-from smlx.models.SmolVLM_256M import load, generate
-from PIL import Image
+from smlx.models import load, generate
 
-# Load model
-model, processor = load("HuggingFaceTB/SmolVLM-256M-Instruct")
-
-# Load image
-image = Image.open("photo.jpg")
-
-# Ask question about image
-prompt = "What is in this image?"
-response = generate(model, processor, prompt, image)
-print(response)
+vlm = load("smolvlm-256m")
+print(generate(vlm, "What is in this image?", image="photo.jpg", max_tokens=40))
 ```
 
 ### Audio Transcription
 
 ```python
-from smlx.models.Whisper_tiny import load, transcribe
+from smlx.models import load
+from smlx.models.mlx_backend import transcribe
 
-# Load model
-model, processor = load()
-
-# Transcribe audio
-result = transcribe(model, processor, "audio.wav")
-print(result["text"])
+asr = load("whisper-tiny")
+print(transcribe(asr, "audio.wav"))
 ```
 
-### OCR (Document Recognition)
+### Embeddings
 
 ```python
-from smlx.models.TrOCR_small import load, recognize
-from PIL import Image
+from smlx.models import load
+from smlx.models.mlx_backend import embed
 
-# Load model (printed or handwritten variant)
-model, processor = load("printed")
-
-# Recognize text
-image = Image.open("document.jpg")
-text = recognize(model, processor, image)
-print(text)
+emb = load("minilm")
+vectors = embed(emb, ["a cat sat on the mat", "a feline rested on the rug"])
 ```
 
-### Model Quantization
+### Model Quantization (SMLX value-add)
+
+Quantize any zoo model with SMLX's own system at load time — the model still runs
+through its correct upstream implementation:
 
 ```python
-from smlx.models.SmolLM2_135M import load
-from smlx.quant import quantize_model
+from smlx.models import load, generate
 
-# Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-360m", quantize="4bit")   # correct impl + SMLX 4-bit
+print(generate(m, "What is the capital of France?", max_tokens=24))  # -> Paris
+```
 
-# Quantize to 4-bit
-quantized = quantize_model(model, bits=4, group_size=64)
+### Verify it yourself
 
-# Use quantized model (same API)
-from smlx.models.SmolLM2_135M import generate
-output = generate(quantized, tokenizer, "Hello", max_tokens=50)
+```bash
+smlx models list              # the curated zoo
+smlx models verify            # load + run every model, check output is REAL
+smlx generate smolvlm-256m "What's this?" -i photo.jpg -q 4bit
 ```
 
 ### Agent with Tools

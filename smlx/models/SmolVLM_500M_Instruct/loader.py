@@ -197,16 +197,20 @@ def load(
 
     model.eval()
 
-    # Load tokenizer
-    print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+    # Load HuggingFace processor (expands <image> tokens to match the vision encoder
+    # output — required for the 1:1 image-token replacement in the model). Fall back
+    # to the custom processor only if the HF one can't be loaded.
+    print("Loading processor...")
+    try:
+        from transformers import AutoProcessor as HFAutoProcessor
 
-    # Create image processor
-    print("Creating image processor...")
-    image_processor = ImageProcessor()
-
-    # Create combined processor
-    processor = Processor(tokenizer=tokenizer, image_processor=image_processor)
+        processor = HFAutoProcessor.from_pretrained(str(model_path))
+        print("✓ Using HuggingFace AutoProcessor (proper image token expansion)")
+    except Exception as e:
+        print(f"Warning: Could not load HF AutoProcessor ({e}), falling back to custom processor")
+        tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        image_processor = ImageProcessor()
+        processor = Processor(tokenizer=tokenizer, image_processor=image_processor)
 
     print("✓ Model loaded successfully!")
     return model, processor

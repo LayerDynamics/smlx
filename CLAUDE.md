@@ -4,9 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SMLX (Smol MLX) is a Python package for small models (< 1B parameters) using Apple's MLX framework, optimized for M4 chipsets. Focus areas: vision, voice, language, and multimodal models.
+SMLX (Smol MLX) is a Python package for small, efficient models using Apple's MLX
+framework, optimized for M4 chipsets. Focus areas: vision, voice, language, and
+multimodal models.
 
-**Critical Requirement**: All models must be "smol" (< 1B parameters, preferably < 500M).
+**Critical Requirement — performance-based inclusion (not a hard parameter cap).**
+A model qualifies for the SMLX zoo if it meets all three *performance* gates on the
+M4 target, regardless of exact parameter count:
+
+1. **Memory**: loads and runs inference within the 36 GB unified-memory budget (with
+   headroom), using the presets in `smlx/config/model_profiles.py`.
+2. **Speed**: meets its modality's performance floor (WS-3 bench gate — e.g. tok/s,
+   first-token latency, RTF).
+3. **Correctness**: produces real, correct output (passes the `tests/smoke`
+   real-output assertion — no placeholder/noise).
+
+Parameter count is a **guideline, not a gate**: target < 500M, prefer < 1B, but a
+larger model (e.g. a ~1.5–1.8B VLM that still fits memory and runs acceptably) is
+admitted as a documented **performance exception**. The name "smol" reflects
+*on-device efficiency*, not a strict size limit.
 
 ## Known Defects — Deceptive or Wrong Code (RESOLVED)
 
@@ -194,9 +210,12 @@ defects remain from this audit.
 - [x] **`smlx/bench/suites/quantization.py:128`** hardcodes `total_params = 135_000_000`
   fallback; **`smlx/bench/suites/llm.py:386-390`** `_manual_generate_loop` never breaks on
   EOS (token counts ignore natural stopping).
-- [x] **CLI not installed as a console script** — `pyproject.toml [project.scripts]` has
-  `smlx = "smlx.main:main"` commented out, so the documented `smlx …` command doesn't
-  exist; only `python -m smlx.main` works. Wire it up or document only the module form.
+- [x] **CLI console script — now wired and verified.** `pyproject.toml [project.scripts]`
+  has `smlx = "smlx.main:main"` (uncommented); after `pip install -e .` the `smlx …`
+  command works (verified in a fresh venv from the built wheel). `python -m smlx.main`
+  also still works. Note: importing `smlx.models` requires `psutil` and `safetensors`,
+  which are now **core** dependencies (previously mis-filed under `[dev]`/`[tools]`, which
+  made a clean `pip install smlx` crash on `import psutil` in `smlx_manager.py`).
 
 ### Documentation defects in THIS file (now reconciled)
 
@@ -294,9 +313,9 @@ mypy smlx/
 ### Command-Line Interface (`smlx/main.py`)
 
 There is a full Click-based CLI in `smlx/main.py` (commands: `generate`, `server`,
-`bench`, `convert`, `download`, `transcribe`). It is **not** wired up as a console
-script yet — the `smlx = "smlx.main:main"` entry in `pyproject.toml` is commented out —
-so invoke it as a module:
+`bench`, `convert`, `download`, `transcribe`, `data`). It **is** wired up as a console
+script — `smlx = "smlx.main:main"` in `pyproject.toml [project.scripts]` — so after
+`pip install -e .` the `smlx` command works directly. The module form also works:
 
 ```bash
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main generate SmolLM2-135M "Hello"

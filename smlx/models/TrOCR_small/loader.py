@@ -17,6 +17,16 @@ from .config import TrOCRConfig, create_config_from_dict
 from .model import TrOCR
 from .processor import TrOCRProcessor
 
+# Short variant names -> canonical HuggingFace repo IDs. Used for both the
+# weight download (get_model_path) and the tokenizer/processor construction in
+# load(); an unknown name passes through unchanged (treated as a raw repo id).
+_REPO_MAP = {
+    "trocr-small-printed": "microsoft/trocr-small-printed",
+    "trocr-small-handwritten": "microsoft/trocr-small-handwritten",
+    "printed": "microsoft/trocr-small-printed",
+    "handwritten": "microsoft/trocr-small-handwritten",
+}
+
 
 def get_model_path(
     model_name: str = "microsoft/trocr-small-printed",
@@ -38,15 +48,7 @@ def get_model_path(
             "huggingface_hub is required. Install with: pip install huggingface-hub"
         ) from e
 
-    # Map short names to HuggingFace repo IDs
-    repo_map = {
-        "trocr-small-printed": "microsoft/trocr-small-printed",
-        "trocr-small-handwritten": "microsoft/trocr-small-handwritten",
-        "printed": "microsoft/trocr-small-printed",
-        "handwritten": "microsoft/trocr-small-handwritten",
-    }
-
-    repo_id = repo_map.get(model_name, model_name)
+    repo_id = _REPO_MAP.get(model_name, model_name)
 
     # Download model
     try:
@@ -100,8 +102,19 @@ def map_weight_names(weights: dict) -> dict:
     for key, value in weights.items():
         new_key = key
 
-        # Skip embeddings that we don't use (cls_token, distillation_token)
-        if "cls_token" in key or "distillation_token" in key:
+        # DeiT encoder uses CLS + distillation tokens (prepended to the patch
+        # sequence). They MUST be loaded — skipping them (and leaving them random)
+        # corrupts the encoder. Map them onto our encoder module.
+        if "cls_token" in key:
+            mapped_weights["encoder.cls_token"] = value
+            continue
+        if "distillation_token" in key:
+            mapped_weights["encoder.distillation_token"] = value
+            continue
+
+        # Patch-embedding Conv2d: PyTorch (out, in, kH, kW) -> MLX (out, kH, kW, in).
+        if "patch_embeddings.projection.weight" in key:
+            mapped_weights["encoder.patch_embed.weight"] = mx.transpose(value, (0, 2, 3, 1))
             continue
 
         # Encoder mappings
@@ -112,7 +125,9 @@ def map_weight_names(weights: dict) -> dict:
             )
 
             # Position embeddings: encoder.embeddings.position_embeddings -> encoder.position_embeddings
-            new_key = new_key.replace("encoder.embeddings.position_embeddings", "encoder.position_embeddings")
+            new_key = new_key.replace(
+                "encoder.embeddings.position_embeddings", "encoder.position_embeddings"
+            )
 
             # Layer mappings: encoder.encoder.layer.N -> encoder.layers.N
             new_key = new_key.replace("encoder.encoder.layer.", "encoder.layers.")
@@ -256,20 +271,19 @@ def load(
     if model_path:
         weights = load_weights(model_path)
         if weights:
-            # Apply weights (use strict=False to handle non-parameter arrays)
-            model.update(weights, strict=False)
+            # Load via load_weights (the API that actually applies flat dotted-key
+            # weights — model.update() silently drops many of them). Filter to the
+            # keys that exist as model parameters so an orphan/renamed key can't
+            # abort the whole load; report any model params left uncovered.
+            from mlx.utils import tree_flatten
 
-            # Manually set non-parameter arrays (like position_embeddings)
-            # Note: HuggingFace BEiT has 578 positions (576 patches + 2 special tokens)
-            # but TrOCR only uses the patch positions, so we slice to match
-            if "encoder.position_embeddings" in weights:
-                pos_emb = weights["encoder.position_embeddings"]
-                num_patches = config.vision_config.num_patches
-                # Slice to remove CLS and distillation tokens if present
-                if pos_emb.shape[1] > num_patches:
-                    pos_emb = pos_emb[:, :num_patches, :]
-                model.encoder.position_embeddings = pos_emb
+            valid_keys = {k for k, _ in tree_flatten(model.parameters())}
+            to_load = [(k, v) for k, v in weights.items() if k in valid_keys]
+            model.load_weights(to_load, strict=False)
 
+            missing = sorted(valid_keys - {k for k, _ in to_load})
+            if missing:
+                print(f"Warning: {len(missing)} model params not in checkpoint, e.g. {missing[:5]}")
             print(f"Loaded TrOCR weights from {model_path}")
         else:
             print("Warning: No weights found. Using random initialization.")
@@ -279,8 +293,10 @@ def load(
     # Set to eval mode
     model.eval()
 
-    # Create processor with model_name for correct tokenizer
-    processor = TrOCRProcessor(config, model_name=model_name)
+    # Create processor with the *resolved* repo id so the tokenizer loads from
+    # the real HF repo — a short variant name like "printed" is not a valid repo
+    # id and would otherwise fail the (intentionally strict) tokenizer load.
+    processor = TrOCRProcessor(config, model_name=_REPO_MAP.get(model_name, model_name))
 
     return model, processor
 

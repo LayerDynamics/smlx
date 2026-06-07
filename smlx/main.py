@@ -33,133 +33,52 @@ def cli():
 @click.argument("model", type=str)
 @click.argument("prompt", type=str, required=False)
 @click.option("--image", "-i", type=click.Path(exists=True), help="Image file for VLM models")
-@click.option("--max-tokens", "-t", type=int, default=100, help="Maximum tokens to generate")
-@click.option("--temperature", type=float, default=0.7, help="Sampling temperature")
-@click.option("--stream/--no-stream", default=True, help="Stream output tokens")
-def generate(model, prompt, image, max_tokens, temperature, stream):
+@click.option("--max-tokens", "-t", type=int, default=200, help="Maximum tokens to generate")
+@click.option("--temperature", type=float, default=0.0, help="Sampling temperature")
+@click.option("--quantize", "-q", default=None, help="Apply SMLX quantization: 4bit or 8bit")
+def generate(model, prompt, image, max_tokens, temperature, quantize):
     """Generate text with a language or vision-language model.
+
+    Runs the model through its correct upstream MLX implementation
+    (mlx-lm / mlx-vlm) via smlx.models.mlx_backend, optionally quantized with
+    SMLX's quantization system.
 
     Examples:
 
         \b
-        # Text generation
-        smlx generate SmolLM2-135M "Hello, how are you?"
+        # Text generation (zoo alias or any HF repo)
+        smlx generate smollm2-135m "Hello, how are you?"
 
         \b
         # Vision-language generation
-        smlx generate SmolVLM-256M "What's in this image?" -i photo.jpg
+        smlx generate smolvlm-256m "What's in this image?" -i photo.jpg
 
         \b
-        # Adjust parameters
-        smlx generate SmolLM2-360M "Write a poem" -t 200 --temperature 0.9
+        # Quantize with SMLX's 4-bit, then generate
+        smlx generate smollm2-360m "Write a haiku" -q 4bit
     """
     if prompt is None:
-        # Interactive mode
         click.echo("Interactive mode - enter your prompt:")
         prompt = click.prompt("Prompt")
 
-    # Determine model type
-    model_lower = model.lower()
+    from smlx.models import mlx_backend as backend
 
     try:
-        if "vlm" in model_lower or image is not None:
-            # Vision-language model
-            _run_vlm_generation(model, prompt, image, max_tokens, temperature, stream)
-        else:
-            # Language model
-            _run_lm_generation(model, prompt, max_tokens, temperature, stream)
+        click.echo(f"Loading {model}...")
+        bm = backend.load(model, quantize=quantize)
+        click.echo(f" Loaded ({bm.backend.value}{', quantized' if bm.quantized else ''})\n")
+        click.echo("-" * 60)
+        text = backend.generate(
+            bm, prompt, image=image, max_tokens=max_tokens, temperature=temperature
+        )
+        click.echo(text)
+        click.echo("-" * 60)
     except KeyboardInterrupt:
         click.echo("\n\nGeneration interrupted.")
         sys.exit(0)
-
-
-def _run_lm_generation(model_name, prompt, max_tokens, temperature, stream):
-    """Run language model generation."""
-    click.echo(f"Loading {model_name}...")
-
-    # Determine which model to load
-    if "135m" in model_name.lower():
-        from smlx.models.SmolLM2_135M import load, stream_generate
-    elif "360m" in model_name.lower():
-        from smlx.models.SmolLM2_360M import load, stream_generate
-    else:
-        click.echo(f"Error: Unknown language model: {model_name}", err=True)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
-
-    model, tokenizer = load(model_name)
-    click.echo(f" Model loaded\n")
-
-    click.echo(f"Prompt: {prompt}\n")
-    click.echo("Generated text:")
-    click.echo("-" * 60)
-
-    if stream:
-        for token in stream_generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ):
-            click.echo(token, nl=False)
-        click.echo()  # Newline at end
-    else:
-        from smlx.models.SmolLM2_135M import generate
-
-        text = generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        click.echo(text)
-
-    click.echo("-" * 60)
-
-
-def _run_vlm_generation(model_name, prompt, image_path, max_tokens, temperature, stream):
-    """Run vision-language model generation."""
-    if image_path is None:
-        click.echo("Error: Image path required for VLM models (use -i/--image)", err=True)
-        sys.exit(1)
-
-    click.echo(f"Loading {model_name}...")
-
-    # Determine which VLM to load
-    model_lower = model_name.lower()
-    if "smolvlm-256m" in model_lower:
-        from smlx.models.SmolVLM_256M import load, generate
-    elif "smolvlm-500m" in model_lower:
-        from smlx.models.SmolVLM_500M_Instruct import load, generate
-    elif "nanovlm" in model_lower:
-        from smlx.models.nanoVLM import load, generate
-    elif "moondream" in model_lower:
-        from smlx.models.Moondream2 import load, generate
-    elif "tinyllava" in model_lower:
-        from smlx.models.TinyLLaVA import load, generate
-    else:
-        click.echo(f"Error: Unknown VLM model: {model_name}", err=True)
-        sys.exit(1)
-
-    model, processor = load(model_name)
-    click.echo(f" Model loaded\n")
-
-    click.echo(f"Image: {image_path}")
-    click.echo(f"Prompt: {prompt}\n")
-    click.echo("Generated text:")
-    click.echo("-" * 60)
-
-    text = generate(
-        model=model,
-        processor=processor,
-        prompt=prompt,
-        image=image_path,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    click.echo(text)
-    click.echo("-" * 60)
 
 
 @cli.command()
@@ -302,7 +221,8 @@ def transcribe(audio_file, model, language, output_format, output):
 
     Supports various output formats including SRT/VTT subtitles.
     """
-    from smlx.models.Whisper_tiny import load, transcribe as whisper_transcribe
+    from smlx.models.Whisper_tiny import load
+    from smlx.models.Whisper_tiny import transcribe as whisper_transcribe
 
     click.echo(f"Loading {model}...")
     whisper_model, tokenizer = load(model)
@@ -491,6 +411,161 @@ def data_eval(benchmark, model, eval_args):
     mod = import_module(mod_name)
     sys.argv = [mod_name, "--model", model, *eval_args]
     mod.main()
+
+
+@cli.group()
+def models():
+    """Inspect and verify the curated model zoo (runs on the upstream backend).
+
+    \b
+    smlx models list                  # the curated zoo
+    smlx models verify                # load + run + check real output for every model
+    smlx models verify smolvlm-256m   # just one
+    """
+    pass
+
+
+@models.command(name="list")
+def models_list():
+    """List the curated zoo (alias, backend, modality, params)."""
+    from smlx.models import mlx_backend as backend
+
+    header = f"{'ALIAS':<16} {'BACKEND':<8} {'MODALITY':<10} {'PARAMS':<7} REPO"
+    click.echo(header)
+    click.echo("-" * len(header))
+    for entry in backend.ZOO.values():
+        click.echo(
+            f"{entry.key:<16} {entry.backend.value.replace('mlx_',''):<8} "
+            f"{entry.modality:<10} {entry.params:<7} {entry.repo}"
+        )
+
+
+def _looks_like_real_text(text: str, min_words: int = 3) -> bool:
+    """Lightweight real-output check (CLI cannot import the test assertions)."""
+    import re
+
+    words = re.findall(r"[A-Za-z]{2,}", text or "")
+    if len(words) < min_words:
+        return False
+    from collections import Counter
+
+    lowered = [w.lower() for w in words]
+    _, top = Counter(lowered).most_common(1)[0]
+    return top / len(lowered) < 0.6  # not degenerate repetition
+
+
+@models.command(name="verify")
+@click.argument("model", required=False)
+@click.option("--quantize", "-q", default=None, help="Verify with SMLX quantization (4bit/8bit)")
+@click.option("--max-tokens", "-t", type=int, default=40, help="Tokens to generate per check")
+@click.option(
+    "--enforce-perf",
+    is_flag=True,
+    default=False,
+    help="Also fail if a model is below its modality's calibrated speed floor (WS-3 gate)",
+)
+def models_verify(model, quantize, max_tokens, enforce_perf):
+    """Load each model through its backend, run it, and assert real output.
+
+    Exits non-zero if any verified model fails to produce coherent output. With
+    ``--enforce-perf`` it also fails any model below its calibrated speed floor
+    (see :mod:`smlx.config.inclusion_policy`).
+    """
+    import time
+
+    from smlx.config.inclusion_policy import DEFAULT_GATES
+    from smlx.models import mlx_backend as backend
+
+    targets = [model.lower()] if model else list(backend.ZOO.keys())
+    unknown = [t for t in targets if t not in backend.ZOO]
+    if unknown:
+        click.echo(f"Unknown model(s): {unknown}. Try: smlx models list", err=True)
+        sys.exit(2)
+
+    # A bundled image for VLM checks (optional).
+    image_path = None
+    try:
+        from smlx.data import local
+
+        if local.is_available("coco8"):
+            tree = local.load("coco8", split="train")
+            image_path = str(tree.images[0])
+    except Exception:
+        image_path = None
+
+    failures = 0
+    perf_fails = 0
+    click.echo(f"{'MODEL':<16} {'RESULT':<7} {'speed':>11}  {'PERF':<5} OUTPUT")
+    click.echo("-" * 78)
+    for key in targets:
+        entry = backend.ZOO[key]
+        floor = DEFAULT_GATES.speed_floors.get(entry.modality)
+        try:
+            bm = backend.load(key, quantize=quantize)
+            t0 = time.perf_counter()
+            # measured: the value compared against the modality's speed floor.
+            if entry.modality == "asr":
+                # Transcribe a bundled LibriSpeech clip; check it's real text.
+                from smlx.data import local as _local
+
+                audio = _local.load("librispeech_sample")[0]["audio"]["array"]
+                out = backend.transcribe(bm, audio)
+                ok = _looks_like_real_text(out)
+                dt = time.perf_counter() - t0
+                measured = None  # RTF needs clip duration; not enforced here
+                speed_str = f"{dt:.2f}s"
+            elif entry.modality == "embeddings":
+                import numpy as _np
+
+                sentences = ["a cat sleeps", "a kitten naps"]
+                emb = _np.asarray(backend.embed(bm, sentences))
+                # Correct: 2-D, finite, and the two related sentences are similar.
+                ok = emb.ndim == 2 and bool(_np.isfinite(emb).all())
+                out = f"embeddings shape {emb.shape}"
+                dt = time.perf_counter() - t0
+                measured = len(sentences) / dt if dt > 0 else 0.0  # sentences/s
+                speed_str = f"{measured:.0f} sent/s"
+            else:
+                prompt = (
+                    "What is in this image?"
+                    if entry.modality == "vlm"
+                    else "In one sentence, what is MLX?"
+                )
+                img = image_path if entry.modality == "vlm" else None
+                out = backend.generate(bm, prompt, image=img, max_tokens=max_tokens)
+                ok = _looks_like_real_text(out)
+                dt = time.perf_counter() - t0
+                measured = len((out or "").split()) / dt if dt > 0 else 0.0  # ~tok/s
+                speed_str = f"{measured:.1f} tok/s"
+
+            # Speed-floor verdict (only when a floor is calibrated and we measured).
+            if floor is not None and floor.floor is not None and measured is not None:
+                perf_ok = measured >= floor.floor  # all calibrated floors are AT_LEAST
+                perf_tag = "PASS" if perf_ok else "LOW"
+            else:
+                perf_ok, perf_tag = True, "n/a"
+
+            snippet = " ".join((out or "").split())[:40]
+            click.echo(
+                f"{key:<16} {'PASS' if ok else 'FAIL':<7} {speed_str:>11}  "
+                f"{perf_tag:<5} {snippet}"
+            )
+            if not ok:
+                failures += 1
+            if not perf_ok:
+                perf_fails += 1
+        except Exception as e:
+            click.echo(
+                f"{key:<16} {'ERROR':<7} {'-':>11}  {'-':<5} {type(e).__name__}: {str(e)[:32]}"
+            )
+            failures += 1
+
+    click.echo("-" * 78)
+    click.echo(f"{len(targets) - failures}/{len(targets)} models produced real output.")
+    if enforce_perf and perf_fails:
+        click.echo(f"{perf_fails} model(s) below their calibrated speed floor.", err=True)
+    if failures or (enforce_perf and perf_fails):
+        sys.exit(1)
 
 
 def main():

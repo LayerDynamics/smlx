@@ -576,74 +576,82 @@ class TestImageProcessing:
 class TestImageTokenMerge:
     """Test prepare_inputs_for_generation injects image features at <image> tokens.
 
-    Exercised without a real model: image_features are supplied directly (so the
-    vision encoder is not called) and embed_tokens is stubbed, which isolates the
-    text/vision merge logic.
+    Exercised on a REAL (small, randomly-initialised) TinyLLaVA model — no test
+    doubles. We pass image_features directly so the vision tower isn't run, but
+    the text path (the real ``language_model.embed_tokens``) and the model's real
+    ``config.image_token_index`` drive the merge. Image patches use distinctive
+    sentinel values (100.0 / 200.0) that cannot collide with the model's real
+    (small, ~N(0, σ²)) text embeddings, so we can assert exactly where each
+    image's patches land and that text positions keep their real embeddings.
     """
 
-    HIDDEN = 8
-    IMG_TOKEN = 999
+    HIDDEN = 32
 
-    def _fake_model(self):
-        import numpy as np
-
-
-        hidden = self.HIDDEN
-        img_token = self.IMG_TOKEN
-
-        class _LM:
-            def embed_tokens(self, ids):
-                arr = np.array(ids)[..., None].astype("float32")
-                return mx.broadcast_to(mx.array(arr), (ids.shape[0], ids.shape[1], hidden))
-
-        class _Cfg:
-            image_token_index = img_token
-
-        class _Fake:
-            config = _Cfg()
-            language_model = _LM()
-
-        return _Fake()
-
-    def test_single_image_injection(self):
-
-        feats = mx.arange(1 * 4 * self.HIDDEN).reshape(1, 4, self.HIDDEN).astype(mx.float32)
-        ids = mx.array([[1, self.IMG_TOKEN, 2]])  # 2 text tokens + 1 image (4 patches)
-        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
-            self._fake_model(), ids, image_features=feats
+    @pytest.fixture(scope="class")
+    def model(self):
+        """A real small TinyLLaVA (tiny vision + text stacks, real embed table)."""
+        cfg = ModelConfig(
+            vision_config=VisionConfig(
+                hidden_size=128,
+                num_hidden_layers=1,
+                num_attention_heads=4,
+                intermediate_size=256,
+                image_size=224,
+                patch_size=16,
+            ),
+            text_config=TextConfig(
+                hidden_size=self.HIDDEN,
+                num_hidden_layers=1,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                intermediate_size=64,
+                vocab_size=1000,
+            ),
+            connector_config=ConnectorConfig(),
         )
+        return TinyLLaVA(cfg)
+
+    def _img_token(self, model):
+        return model.config.image_token_index
+
+    def test_single_image_injection(self, model):
+        img = self._img_token(model)
+        feats = mx.arange(1 * 4 * self.HIDDEN).reshape(1, 4, self.HIDDEN).astype(mx.float32)
+        ids = mx.array([[1, img, 2]])  # 2 text tokens + 1 image (4 patches)
+        combined, _ = model.prepare_inputs_for_generation(ids, image_features=feats)
         assert combined.shape == (1, 2 + 4, self.HIDDEN)
 
-    def test_multiple_image_injection(self):
-
+    def test_multiple_image_injection(self, model):
+        img = self._img_token(model)
         feats = mx.arange(2 * 3 * self.HIDDEN).reshape(2, 3, self.HIDDEN).astype(mx.float32)
         # text + <image> + text + <image> + text -> 3 text + 2*3 patches
-        ids = mx.array([[1, self.IMG_TOKEN, 2, self.IMG_TOKEN, 3]])
-        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
-            self._fake_model(), ids, image_features=feats
-        )
+        ids = mx.array([[1, img, 2, img, 3]])
+        combined, _ = model.prepare_inputs_for_generation(ids, image_features=feats)
         assert combined.shape == (1, 3 + 2 * 3, self.HIDDEN)
 
-    def test_image_count_mismatch_raises(self):
-
+    def test_image_count_mismatch_raises(self, model):
+        img = self._img_token(model)
         feats = mx.arange(1 * 3 * self.HIDDEN).reshape(1, 3, self.HIDDEN).astype(mx.float32)
-        ids = mx.array([[self.IMG_TOKEN, 1, self.IMG_TOKEN]])  # 2 tokens, 1 image
+        ids = mx.array([[img, 1, img]])  # 2 image tokens, 1 image
         with pytest.raises(ValueError, match="does not match"):
-            TinyLLaVA.prepare_inputs_for_generation(self._fake_model(), ids, image_features=feats)
+            model.prepare_inputs_for_generation(ids, image_features=feats)
 
-    def test_batched_injection_places_features_in_correct_row(self):
+    def test_batched_injection_places_features_in_correct_row(self, model):
         """Batch>1: each row's image lands in that row, not flattened across rows."""
         import numpy as np
 
-
+        img = self._img_token(model)
         patches = 2
         # Two rows, each with one <image> token at a different column.
         ids = mx.array(
             [
-                [1, self.IMG_TOKEN, 2, 3],  # image at col 1
-                [4, 5, self.IMG_TOKEN, 6],  # image at col 2
+                [1, img, 2, 3],  # image at col 1
+                [4, 5, img, 6],  # image at col 2
             ]
         )
+        # Reference text embeddings straight from the real embedding table.
+        ref = np.array(model.language_model.embed_tokens(ids))
+
         # Row 0 -> image 0 (all 100.0), row 1 -> image 1 (all 200.0).
         feats = mx.concatenate(
             [
@@ -652,40 +660,38 @@ class TestImageTokenMerge:
             ],
             axis=0,
         )
-        combined, _ = TinyLLaVA.prepare_inputs_for_generation(
-            self._fake_model(), ids, image_features=feats
-        )
+        combined, _ = model.prepare_inputs_for_generation(ids, image_features=feats)
         # Each row: 3 text tokens + `patches` image tokens.
         assert combined.shape == (2, 3 + patches, self.HIDDEN)
 
         out = np.array(combined)
-        # Row 0: text(token 1), image patches (100.0), text(tokens 2, 3).
-        assert np.allclose(out[0, 0, :], 1.0)
+        # Row 0: text(col 0), image patches (100.0), text(cols 2, 3 of the original).
+        assert np.allclose(out[0, 0, :], ref[0, 0, :])
         assert np.allclose(out[0, 1 : 1 + patches, :], 100.0)
-        assert np.allclose(out[0, 1 + patches, :], 2.0)
-        assert np.allclose(out[0, 2 + patches, :], 3.0)
-        # Row 1: text(tokens 4, 5), image patches (200.0), text(token 6).
-        assert np.allclose(out[1, 0, :], 4.0)
-        assert np.allclose(out[1, 1, :], 5.0)
+        assert np.allclose(out[0, 1 + patches, :], ref[0, 2, :])
+        assert np.allclose(out[0, 2 + patches, :], ref[0, 3, :])
+        # Row 1: text(cols 0, 1), image patches (200.0), text(col 3 of the original).
+        assert np.allclose(out[1, 0, :], ref[1, 0, :])
+        assert np.allclose(out[1, 1, :], ref[1, 1, :])
         assert np.allclose(out[1, 2 : 2 + patches, :], 200.0)
-        assert np.allclose(out[1, 2 + patches, :], 6.0)
+        assert np.allclose(out[1, 2 + patches, :], ref[1, 3, :])
         # The image features must NOT bleed into the wrong row.
         assert not np.any(np.isclose(out[0], 200.0))
         assert not np.any(np.isclose(out[1], 100.0))
 
-    def test_ragged_batch_raises(self):
+    def test_ragged_batch_raises(self, model):
         """Rows with differing <image>-token counts cannot pack into one tensor."""
-
+        img = self._img_token(model)
         # Row 0 has two <image> tokens, row 1 has one -> ragged expanded lengths.
         ids = mx.array(
             [
-                [self.IMG_TOKEN, 1, self.IMG_TOKEN],
-                [2, self.IMG_TOKEN, 3],
+                [img, 1, img],
+                [2, img, 3],
             ]
         )
         feats = mx.arange(3 * 2 * self.HIDDEN).reshape(3, 2, self.HIDDEN).astype(mx.float32)
         with pytest.raises(ValueError, match="Ragged image batch"):
-            TinyLLaVA.prepare_inputs_for_generation(self._fake_model(), ids, image_features=feats)
+            model.prepare_inputs_for_generation(ids, image_features=feats)
 
 
 # ============================================================================
