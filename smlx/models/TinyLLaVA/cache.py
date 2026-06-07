@@ -70,7 +70,9 @@ from smlx.utils.cache import KVCache, RotatingKVCache
 from smlx.utils.cache import make_cache as utils_make_cache
 
 if TYPE_CHECKING:
-    from smlx.models.TinyLLaVA.language import TinyLlama
+    # The language model class is TinyLlamaModel; aliased to TinyLlama for the
+    # annotations below (which read as the model family name).
+    from smlx.models.TinyLLaVA.language import TinyLlamaModel as TinyLlama
 
 # Re-export cache classes for backward compatibility
 __all__ = [

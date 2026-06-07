@@ -28,6 +28,10 @@ class BaseDataset(Protocol):
         """Get item at index."""
         ...
 
+    def process(self, d: Any) -> Any:
+        """Process a raw sample (e.g. tokenize) into the model-ready form."""
+        ...
+
 
 class TextDataset:
     """

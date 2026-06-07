@@ -231,16 +231,29 @@ def convert(source, output, output_format, quantize):
 
     Convert PyTorch, TensorFlow, or ONNX models to MLX-compatible format.
     """
-    from smlx.tools.convert2mlx import convert_model
+    from smlx.tools.convert2mlx import convert as convert_to_mlx
 
     click.echo(f"Converting {source} -> {output}")
+    if output_format and output_format != "safetensors":
+        click.echo(
+            f"Note: MLX conversion writes safetensors weights; ignoring --format '{output_format}'."
+        )
+
+    # Map the CLI --quantize string ("4bit"/"8bit"/...) to convert()'s
+    # (quantize: bool, q_bits: int) arguments.
+    quantize_flag = bool(quantize)
+    q_bits = 4
+    if quantize:
+        digits = "".join(ch for ch in str(quantize) if ch.isdigit())
+        if digits:
+            q_bits = int(digits)
 
     try:
-        convert_model(
-            source_path=source,
-            output_path=output,
-            output_format=output_format,
-            quantize=quantize,
+        convert_to_mlx(
+            hf_path=source,
+            mlx_path=output,
+            quantize=quantize_flag,
+            q_bits=q_bits,
         )
         click.echo(f" Conversion complete: {output}")
     except Exception as e:

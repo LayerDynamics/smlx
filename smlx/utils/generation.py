@@ -410,6 +410,7 @@ def stream_generate(
     repetition_penalty: float = 1.0,
     stop_token_ids: Optional[list[int]] = None,
     stop_strings: Optional[list[str]] = None,
+    verbose: bool = False,
 ) -> Generator[str, None, None]:
     """
     Stream generated text token by token.
@@ -429,6 +430,7 @@ def stream_generate(
         repetition_penalty: Penalty for repeating tokens
         stop_token_ids: Token IDs that stop generation
         stop_strings: Strings that stop generation
+        verbose: Print throughput stats (tokens, elapsed, tok/s) to stderr when done
 
     Yields:
         Generated text segments (delta from previous state)
@@ -453,39 +455,52 @@ def stream_generate(
     generated_tokens = []
     prev_text = ""
 
-    for i, (token, _) in enumerate(
-        generate_step(
-            model=model,
-            prompt_tokens=prompt_tokens,
-            temp=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            repetition_penalty=repetition_penalty,
-        )
-    ):
-        if i >= max_tokens:
-            break
+    import sys
+    import time
 
-        token_id = int(token.item())
-        generated_tokens.append(token_id)
+    start_time = time.perf_counter()
+    try:
+        for i, (token, _) in enumerate(
+            generate_step(
+                model=model,
+                prompt_tokens=prompt_tokens,
+                temp=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                repetition_penalty=repetition_penalty,
+            )
+        ):
+            if i >= max_tokens:
+                break
 
-        # Decode and yield delta
-        current_text = tokenizer.decode(generated_tokens)
-        new_text = current_text[len(prev_text) :]
-        prev_text = current_text
+            token_id = int(token.item())
+            generated_tokens.append(token_id)
 
-        yield new_text
+            # Decode and yield delta
+            current_text = tokenizer.decode(generated_tokens)
+            new_text = current_text[len(prev_text) :]
+            prev_text = current_text
 
-        # Check for stop strings
-        if stop_strings:
-            for stop in stop_strings:
-                if stop in current_text:
+            yield new_text
+
+            # Check for stop strings
+            if stop_strings:
+                if any(stop in current_text for stop in stop_strings):
                     return
 
-        # Check for stop tokens
-        if token_id in stop_token_ids:
-            return
+            # Check for stop tokens
+            if token_id in stop_token_ids:
+                return
+    finally:
+        if verbose:
+            elapsed = time.perf_counter() - start_time
+            n = len(generated_tokens)
+            tps = n / elapsed if elapsed > 0 else 0.0
+            print(
+                f"[stream_generate] {n} tokens in {elapsed:.2f}s ({tps:.1f} tok/s)",
+                file=sys.stderr,
+            )
 
 
 def chat(

@@ -186,8 +186,8 @@ async def transcribe_audio(
         result = await loop.run_in_executor(
             None,
             lambda: transcribe(
+                audio=tmp_path,
                 model=model,
-                audio_path=tmp_path,
                 language=language,
                 temperature=temperature,
                 initial_prompt=prompt,

@@ -78,6 +78,7 @@ def load_model_from_path(
 
 def _apply_quantization(
     model: Model,
+    tokenizer,
     quantize: QuantizePreset,
     quantization_config: Optional[dict] = None,
 ) -> Model:
@@ -86,6 +87,7 @@ def _apply_quantization(
 
     Args:
         model: Model to quantize
+        tokenizer: Tokenizer for loading calibration data (required for GPTQ/AWQ/DWQ)
         quantize: Quantization preset
         quantization_config: Optional configuration dict
 
@@ -101,9 +103,11 @@ def _apply_quantization(
         awq_quantize,
         dwq_quantize_simple,
         gptq_quantize,
+        llama_awq,
         quantize_4bit,
         quantize_8bit,
     )
+    from smlx.quant.utils import load_calibration_data
 
     # Default configuration
     default_config = {"bits": 4, "group_size": 64}
@@ -131,10 +135,20 @@ def _apply_quantization(
         return model
 
     elif quantize == "gptq":
-        # GPTQ quantization
-        print(f"Applying GPTQ quantization ({config['bits']}-bit, group_size={config['group_size']})...")
+        # GPTQ quantization requires calibration data
+        print(
+            f"Applying GPTQ quantization ({config['bits']}-bit, group_size={config['group_size']})..."
+        )
+        print("Loading calibration data...")
+        calibration_data = load_calibration_data(
+            tokenizer=tokenizer,
+            num_samples=config.get("calibration_samples", 128),
+            sequence_length=config.get("calibration_seq_len", 512),
+            verbose=False,
+        )
         quantized_model = gptq_quantize(
             model=model,
+            calibration_data=calibration_data,
             bits=config["bits"],
             group_size=config["group_size"],
         )
@@ -142,10 +156,21 @@ def _apply_quantization(
         return quantized_model
 
     elif quantize == "awq":
-        # AWQ quantization
-        print(f"Applying AWQ quantization ({config['bits']}-bit, group_size={config['group_size']})...")
+        # AWQ quantization requires calibration data + a model AWQ config
+        print(
+            f"Applying AWQ quantization ({config['bits']}-bit, group_size={config['group_size']})..."
+        )
+        print("Loading calibration data...")
+        calibration_data = load_calibration_data(
+            tokenizer=tokenizer,
+            num_samples=config.get("calibration_samples", 128),
+            sequence_length=config.get("calibration_seq_len", 512),
+            verbose=False,
+        )
         quantized_model = awq_quantize(
             model=model,
+            calibration_data=calibration_data,
+            awq_config=llama_awq,
             bits=config["bits"],
             group_size=config["group_size"],
         )
@@ -153,10 +178,20 @@ def _apply_quantization(
         return quantized_model
 
     elif quantize == "dwq":
-        # DWQ quantization
-        print(f"Applying DWQ quantization ({config['bits']}-bit, group_size={config['group_size']})...")
+        # DWQ quantization requires calibration data (teacher outputs guide it)
+        print(
+            f"Applying DWQ quantization ({config['bits']}-bit, group_size={config['group_size']})..."
+        )
+        print("Loading calibration data...")
+        calibration_data = load_calibration_data(
+            tokenizer=tokenizer,
+            num_samples=config.get("calibration_samples", 128),
+            sequence_length=config.get("calibration_seq_len", 512),
+            verbose=False,
+        )
         quantized_model = dwq_quantize_simple(
             model=model,
+            calibration_data=calibration_data,
             bits=config["bits"],
             group_size=config["group_size"],
         )
@@ -237,7 +272,7 @@ def load(
 
     # Apply quantization if requested
     if quantize is not None:
-        model = _apply_quantization(model, quantize, quantization_config)
+        model = _apply_quantization(model, tokenizer_obj, quantize, quantization_config)
 
     return model, tokenizer_obj
 
