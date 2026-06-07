@@ -221,7 +221,8 @@ def transcribe(audio_file, model, language, output_format, output):
 
     Supports various output formats including SRT/VTT subtitles.
     """
-    from smlx.models.Whisper_tiny import load, transcribe as whisper_transcribe
+    from smlx.models.Whisper_tiny import load
+    from smlx.models.Whisper_tiny import transcribe as whisper_transcribe
 
     click.echo(f"Loading {model}...")
     whisper_model, tokenizer = load(model)
@@ -457,13 +458,22 @@ def _looks_like_real_text(text: str, min_words: int = 3) -> bool:
 @click.argument("model", required=False)
 @click.option("--quantize", "-q", default=None, help="Verify with SMLX quantization (4bit/8bit)")
 @click.option("--max-tokens", "-t", type=int, default=40, help="Tokens to generate per check")
-def models_verify(model, quantize, max_tokens):
+@click.option(
+    "--enforce-perf",
+    is_flag=True,
+    default=False,
+    help="Also fail if a model is below its modality's calibrated speed floor (WS-3 gate)",
+)
+def models_verify(model, quantize, max_tokens, enforce_perf):
     """Load each model through its backend, run it, and assert real output.
 
-    Exits non-zero if any verified model fails to produce coherent output.
+    Exits non-zero if any verified model fails to produce coherent output. With
+    ``--enforce-perf`` it also fails any model below its calibrated speed floor
+    (see :mod:`smlx.config.inclusion_policy`).
     """
     import time
 
+    from smlx.config.inclusion_policy import DEFAULT_GATES
     from smlx.models import mlx_backend as backend
 
     targets = [model.lower()] if model else list(backend.ZOO.keys())
@@ -484,13 +494,16 @@ def models_verify(model, quantize, max_tokens):
         image_path = None
 
     failures = 0
-    click.echo(f"{'MODEL':<16} {'RESULT':<7} {'tok/s':>7}  OUTPUT")
-    click.echo("-" * 72)
+    perf_fails = 0
+    click.echo(f"{'MODEL':<16} {'RESULT':<7} {'speed':>11}  {'PERF':<5} OUTPUT")
+    click.echo("-" * 78)
     for key in targets:
         entry = backend.ZOO[key]
+        floor = DEFAULT_GATES.speed_floors.get(entry.modality)
         try:
             bm = backend.load(key, quantize=quantize)
             t0 = time.perf_counter()
+            # measured: the value compared against the modality's speed floor.
             if entry.modality == "asr":
                 # Transcribe a bundled LibriSpeech clip; check it's real text.
                 from smlx.data import local as _local
@@ -498,13 +511,20 @@ def models_verify(model, quantize, max_tokens):
                 audio = _local.load("librispeech_sample")[0]["audio"]["array"]
                 out = backend.transcribe(bm, audio)
                 ok = _looks_like_real_text(out)
+                dt = time.perf_counter() - t0
+                measured = None  # RTF needs clip duration; not enforced here
+                speed_str = f"{dt:.2f}s"
             elif entry.modality == "embeddings":
                 import numpy as _np
 
-                emb = _np.asarray(backend.embed(bm, ["a cat sleeps", "a kitten naps"]))
+                sentences = ["a cat sleeps", "a kitten naps"]
+                emb = _np.asarray(backend.embed(bm, sentences))
                 # Correct: 2-D, finite, and the two related sentences are similar.
                 ok = emb.ndim == 2 and bool(_np.isfinite(emb).all())
                 out = f"embeddings shape {emb.shape}"
+                dt = time.perf_counter() - t0
+                measured = len(sentences) / dt if dt > 0 else 0.0  # sentences/s
+                speed_str = f"{measured:.0f} sent/s"
             else:
                 prompt = (
                     "What is in this image?"
@@ -514,20 +534,35 @@ def models_verify(model, quantize, max_tokens):
                 img = image_path if entry.modality == "vlm" else None
                 out = backend.generate(bm, prompt, image=img, max_tokens=max_tokens)
                 ok = _looks_like_real_text(out)
-            dt = time.perf_counter() - t0
-            n_words = len((out or "").split())
-            tps = n_words / dt if dt > 0 else 0.0
-            snippet = " ".join((out or "").split())[:48]
-            click.echo(f"{key:<16} {'PASS' if ok else 'FAIL':<7} {tps:>7.1f}  {snippet}")
+                dt = time.perf_counter() - t0
+                measured = len((out or "").split()) / dt if dt > 0 else 0.0  # ~tok/s
+                speed_str = f"{measured:.1f} tok/s"
+
+            # Speed-floor verdict (only when a floor is calibrated and we measured).
+            if floor is not None and floor.floor is not None and measured is not None:
+                perf_ok = measured >= floor.floor  # all calibrated floors are AT_LEAST
+                perf_tag = "PASS" if perf_ok else "LOW"
+            else:
+                perf_ok, perf_tag = True, "n/a"
+
+            snippet = " ".join((out or "").split())[:40]
+            click.echo(
+                f"{key:<16} {'PASS' if ok else 'FAIL':<7} {speed_str:>11}  "
+                f"{perf_tag:<5} {snippet}"
+            )
             if not ok:
                 failures += 1
+            if not perf_ok:
+                perf_fails += 1
         except Exception as e:
-            click.echo(f"{key:<16} {'ERROR':<7} {'-':>7}  {type(e).__name__}: {str(e)[:40]}")
+            click.echo(f"{key:<16} {'ERROR':<7} {'-':>11}  {'-':<5} {type(e).__name__}: {str(e)[:32]}")
             failures += 1
 
-    click.echo("-" * 72)
+    click.echo("-" * 78)
     click.echo(f"{len(targets) - failures}/{len(targets)} models produced real output.")
-    if failures:
+    if enforce_perf and perf_fails:
+        click.echo(f"{perf_fails} model(s) below their calibrated speed floor.", err=True)
+    if failures or (enforce_perf and perf_fails):
         sys.exit(1)
 
 

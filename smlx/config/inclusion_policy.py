@@ -57,11 +57,15 @@ class InclusionGates:
     # smoke/bench modality labels.
     speed_floors: dict[str, SpeedFloor] = field(
         default_factory=lambda: {
-            "language": SpeedFloor("decode_tokens_per_s", "tok/s", Comparison.AT_LEAST),
-            "vlm": SpeedFloor("decode_tokens_per_s", "tok/s", Comparison.AT_LEAST),
+            # Calibrated from the verified zoo on the M4 reference (slowest member,
+            # halved with margin so the gate is meaningful but not CI-flaky on a
+            # loaded machine). Slowest verified: LM 30 tok/s (SmolLM2-1.7B),
+            # VLM 14 tok/s (SmolVLM2-2.2B), embeddings 594 sent/s (MiniLM).
+            "language": SpeedFloor("decode_tokens_per_s", "tok/s", Comparison.AT_LEAST, 10.0),
+            "vlm": SpeedFloor("decode_tokens_per_s", "tok/s", Comparison.AT_LEAST, 5.0),
             "asr": SpeedFloor("real_time_factor", "xRT", Comparison.AT_MOST),
             "tts": SpeedFloor("real_time_factor", "xRT", Comparison.AT_MOST),
-            "embeddings": SpeedFloor("sentences_per_s", "sent/s", Comparison.AT_LEAST),
+            "embeddings": SpeedFloor("sentences_per_s", "sent/s", Comparison.AT_LEAST, 100.0),
             "ocr": SpeedFloor("images_per_s", "img/s", Comparison.AT_LEAST),
             "audio_cls": SpeedFloor("clips_per_s", "clip/s", Comparison.AT_LEAST),
             "vad": SpeedFloor("real_time_factor", "xRT", Comparison.AT_MOST),
