@@ -87,11 +87,15 @@ def test_moondream2_describes_giraffes(giraffe_image_path):
 
 def test_tinyllava_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2: TinyLLaVA-1.5B is IN SCOPE under the performance-based inclusion policy "
-        "(~1.5B fits the M4 memory budget; size is a guideline, not a gate). Remaining "
-        "fix: it currently echoes the prompt back ('What is in this image?' -> same) "
-        "instead of generating an answer — a generation/prompt-template bug to resolve "
-        "before it can assert real output."
+        "WS-2 (in scope, perf exception): TinyLLaVA-1.5B fits the M4 budget. Diagnosis so "
+        "far: the LM runs (text-only generates English) but is DEGENERATE/repetitive ('the "
+        "capital of France is located at the center of the capital of France'), and with an "
+        "image it echoes the user turn. Config MATCHES the bczhou/TinyLLaVA-1.5B reference "
+        "(mm_vision_select_layer=-2, mm_projector_type=mlp2x_gelu mapped to linear_1/2, "
+        "select_feature=patch, 729 SigLIP patches), and the image-merge splices correctly. "
+        "So the bug is subtler than nanoVLM's — likely LM numerics (RoPE base / attn scaling "
+        "on the TinyLlama backbone) and/or the vision hidden-state index. Needs activation-"
+        "level comparison vs the loaded HF TinyLLaVA reference, not a guessed change."
     )
 
 
