@@ -31,6 +31,18 @@ def test_backend_vlm_describes_giraffes(giraffe_image_path):
     A.assert_contains_any(out, ["giraffe", "giraffes", "animal", "tree"], context="backend vlm")
 
 
+def test_backend_qwen2_vl_describes_giraffes(giraffe_image_path):
+    """A 4-bit 2B VLM we never re-implemented, correct via the upstream backend."""
+    from smlx.models import mlx_backend as B
+
+    vlm = B.load("qwen2-vl-2b")
+    out = B.generate(
+        vlm, "What animal is in this image?", image=str(giraffe_image_path), max_tokens=40
+    )
+    A.assert_text_coherent(out, context="backend qwen2-vl")
+    A.assert_contains_any(out, ["giraffe", "giraffes", "animal"], context="backend qwen2-vl")
+
+
 def test_backend_quantized_lm_stays_correct():
     """SMLX's differentiator: quantize a correctly-loaded upstream model and it
     still produces correct output."""

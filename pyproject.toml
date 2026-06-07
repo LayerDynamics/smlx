@@ -40,6 +40,7 @@ dependencies = [
     "safetensors>=0.4.0",  # weight loading/conversion is used across core model loaders
     "mlx-lm>=0.20.0",  # correct upstream MLX language-model implementations (smlx.models.mlx_backend)
     "mlx-vlm>=0.1.0",  # correct upstream MLX vision-language implementations (smlx.models.mlx_backend)
+    "num2words>=0.5.0",  # required by some mlx-vlm processors (e.g. SmolVLM) for number normalization
 ]
 
 [project.optional-dependencies]
