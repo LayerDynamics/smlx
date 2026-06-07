@@ -64,8 +64,14 @@ def test_smolvlm_500m_describes_giraffes(giraffe_image_path):
 
 def test_nanovlm_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2: nanoVLM loader falls back to random weights — wire lusxvr/nanoVLM-222M "
-        "weights through the HF->MLX conversion before this can assert real output."
+        "WS-2: nanoVLM loads real lusxvr/nanoVLM-222M weights correctly (verified: 0 "
+        "missing / 0 extra / 0 shape-mismatched params; the loader's '3 unmatched' warning "
+        "is spurious) and is image-conditioned (output differs per image) BUT inaccurate "
+        "(giraffe photo -> 'white background'; food photo -> 'a dog'). Preprocessing is "
+        "standard SigLIP (224, 0.5 mean/std) and image_size/patch/posemb are consistent "
+        "(224/16/196). The defect is in the vision-encoder forward / modality projector "
+        "(pixel-shuffle token count num_image_tokens=49) or prompt template — needs "
+        "activation-level comparison against the HF nanoVLM reference, not a guessed fix."
     )
 
 
