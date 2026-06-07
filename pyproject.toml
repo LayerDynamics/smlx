@@ -36,6 +36,8 @@ dependencies = [
     "requests>=2.31.0",
     "tqdm>=4.66.0",
     "word2number>=1.1",
+    "psutil>=5.9.0",  # runtime memory profiling (smlx.models.smlx_manager) — required to import smlx.models
+    "safetensors>=0.4.0",  # weight loading/conversion is used across core model loaders
 ]
 
 [project.optional-dependencies]

@@ -194,9 +194,12 @@ defects remain from this audit.
 - [x] **`smlx/bench/suites/quantization.py:128`** hardcodes `total_params = 135_000_000`
   fallback; **`smlx/bench/suites/llm.py:386-390`** `_manual_generate_loop` never breaks on
   EOS (token counts ignore natural stopping).
-- [x] **CLI not installed as a console script** — `pyproject.toml [project.scripts]` has
-  `smlx = "smlx.main:main"` commented out, so the documented `smlx …` command doesn't
-  exist; only `python -m smlx.main` works. Wire it up or document only the module form.
+- [x] **CLI console script — now wired and verified.** `pyproject.toml [project.scripts]`
+  has `smlx = "smlx.main:main"` (uncommented); after `pip install -e .` the `smlx …`
+  command works (verified in a fresh venv from the built wheel). `python -m smlx.main`
+  also still works. Note: importing `smlx.models` requires `psutil` and `safetensors`,
+  which are now **core** dependencies (previously mis-filed under `[dev]`/`[tools]`, which
+  made a clean `pip install smlx` crash on `import psutil` in `smlx_manager.py`).
 
 ### Documentation defects in THIS file (now reconciled)
 
@@ -294,9 +297,9 @@ mypy smlx/
 ### Command-Line Interface (`smlx/main.py`)
 
 There is a full Click-based CLI in `smlx/main.py` (commands: `generate`, `server`,
-`bench`, `convert`, `download`, `transcribe`). It is **not** wired up as a console
-script yet — the `smlx = "smlx.main:main"` entry in `pyproject.toml` is commented out —
-so invoke it as a module:
+`bench`, `convert`, `download`, `transcribe`, `data`). It **is** wired up as a console
+script — `smlx = "smlx.main:main"` in `pyproject.toml [project.scripts]` — so after
+`pip install -e .` the `smlx` command works directly. The module form also works:
 
 ```bash
 /Users/ryanoboyle/miniforge3/envs/smlx/bin/python -m smlx.main generate SmolLM2-135M "Hello"
