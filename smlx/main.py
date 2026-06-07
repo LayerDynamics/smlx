@@ -568,6 +568,89 @@ def models_verify(model, quantize, max_tokens, enforce_perf):
         sys.exit(1)
 
 
+@cli.command(name="run")
+@click.argument("model", required=False)
+@click.option("--text", default=None, help="Text input (prompt / sentence / TTS text / CAD spec)")
+@click.option("--image", "-i", type=click.Path(exists=True), default=None, help="Image input (VLM)")
+@click.option(
+    "--audio",
+    "-a",
+    type=click.Path(exists=True),
+    default=None,
+    help="Audio input (ASR/VAD/audio-cls)",
+)
+@click.option(
+    "--document", "-d", type=click.Path(exists=True), default=None, help="Document image (OCR)"
+)
+@click.option("--all", "run_all", is_flag=True, help="Run every model whose inputs you supply")
+@click.option("--list", "list_models", is_flag=True, help="List every runnable model")
+@click.option("--out-dir", default="data/output", help="Where audio/CAD/json artifacts are written")
+@click.option("--max-tokens", "-t", type=int, default=64, help="Max tokens for generative models")
+def run(model, text, image, audio, document, run_all, list_models, out_dir, max_tokens):
+    """Produce real output from any implemented model (or all of them).
+
+    Every model runs its own real inference pipeline; output artifacts (audio,
+    CAD, json) are written to --out-dir. Each line reports an honest weight
+    status: TRAINED / TRAINED-WEIGHTS (known gap) / PIPELINE-ONLY (random weights:
+    output happens but is not trained-quality) / NO-WEIGHTS.
+
+    Examples:
+
+        \b
+        smlx run --list
+        smlx run smollm2-135m --text "What is MLX?"
+        smlx run orpheus-150m --text "Hello world"     # -> data/output/orpheus-150m.wav
+        smlx run trocr-small --document scan.png
+        smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
+    """
+    from smlx.models import runner
+
+    if list_models:
+        click.echo(f"{'MODEL':<20} {'MODALITY':<12} {'NEEDS':<22} NOTE")
+        click.echo("-" * 78)
+        for e in runner.list_entries():
+            click.echo(f"{e.key:<20} {e.modality:<12} {', '.join(e.needs):<22} {e.note}")
+        return
+
+    inputs = {
+        "text": text,
+        "image": image,
+        "audio": audio,
+        "document": document,
+        "out_dir": out_dir,
+        "max_tokens": max_tokens,
+    }
+
+    if run_all:
+        results = runner.produce_all(**inputs)
+    elif model:
+        try:
+            results = [runner.produce(model, **inputs)]
+        except KeyError as e:
+            click.echo(str(e), err=True)
+            sys.exit(2)
+    else:
+        click.echo("Specify a model, or --all, or --list. See: smlx run --help", err=True)
+        sys.exit(2)
+
+    click.echo(f"{'MODEL':<22} {'STATUS':<46} OUTPUT")
+    click.echo("-" * 100)
+    errors = 0
+    ran = 0
+    for r in results:
+        click.echo(r.status_line())
+        if r.error:
+            errors += 1
+        elif r.ok:
+            ran += 1
+    click.echo("-" * 100)
+    skipped = sum(1 for r in results if not r.ok and not r.error)
+    click.echo(f"{ran} produced output, {skipped} skipped (missing input), {errors} errored.")
+    # Exit non-zero only on real errors — SKIP and honest PIPELINE-ONLY are not failures.
+    if errors:
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     cli()

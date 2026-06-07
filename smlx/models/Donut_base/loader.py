@@ -67,6 +67,7 @@ def load(
     model = DonutModel(config)
 
     # Load weights (if available)
+    weights_loaded = False
     if model_path and model_path.exists():
         weights_loaded = load_weights(model, model_path)
         if not weights_loaded:
@@ -75,6 +76,10 @@ def load(
     else:
         print("⚠ Warning: No model path found, using random initialization")
 
+    # Expose whether real pretrained weights were loaded so callers (e.g. the
+    # unified runner) can honestly report output as trained vs pipeline-only.
+    model.weights_loaded = bool(weights_loaded)
+
     model.eval()
 
     # Load tokenizer
@@ -82,7 +87,9 @@ def load(
     try:
         from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(str(model_path) if model_path else "facebook/bart-base")
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path) if model_path else "facebook/bart-base"
+        )
         print("✓ Tokenizer loaded")
     except Exception as e:
         print(f"⚠ Warning: Could not load tokenizer: {e}")
@@ -90,9 +97,7 @@ def load(
 
     # Create processor
     image_size = (
-        config.encoder_config.image_size
-        if config and config.encoder_config
-        else (224, 224)
+        config.encoder_config.image_size if config and config.encoder_config else (224, 224)
     )
     processor = create_processor(image_size=image_size, tokenizer=tokenizer)
 

@@ -75,6 +75,12 @@ def load(
     if not lazy:
         mx.eval(model.parameters())
 
+    # No public checkpoint exists yet: this path always uses random weights.
+    # Expose the signal so callers (e.g. the unified runner) report output as
+    # pipeline-only rather than trained-quality. load_from_pretrained() sets
+    # this True when it actually loads a checkpoint.
+    model.weights_loaded = False
+
     print(f"Loaded smolGenCad model with {model.num_params_millions:.1f}M parameters")
     print("⚠️  Model initialized with random weights (no pre-trained weights available yet)")
     print("   For training, see docs/ModelImplementations.md")
@@ -122,8 +128,10 @@ def load_model_from_path(
         weights = mx.load(str(weights_path))
         weights = model.sanitize(weights)
         model.load_weights(list(weights.items()))
+        model.weights_loaded = True
         print(f"Loaded weights from {weights_path}")
     else:
+        model.weights_loaded = False
         print(f"Warning: No weights found at {weights_path}, using random initialization")
 
     # Eagerly evaluate if requested
