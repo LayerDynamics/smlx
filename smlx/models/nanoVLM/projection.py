@@ -39,7 +39,7 @@ class MLPProjection(nn.Module):
 
         # Calculate intermediate size after pixel shuffle
         # vision_hidden × (factor²) = 768 × 4 = 3072
-        intermediate_size = config.vision_hidden_size * (pixel_shuffle_factor ** 2)
+        intermediate_size = config.vision_hidden_size * (pixel_shuffle_factor**2)
 
         # Single linear projection from shuffled features to language space
         # 3072 → 576 (no bias - HF model doesn't have bias for this layer)
@@ -64,27 +64,27 @@ class MLPProjection(nn.Module):
             scale_factor=2
             Output: [1, 49, 3072] (7×7 patches, 768×4=3072 channels)
         """
+        # Exact port of huggingface/nanoVLM ModalityProjector.pixel_shuffle so the
+        # channel ordering matches what the trained proj Linear expects:
+        #   view(b, h, w, e) -> reshape(b, h_out, s, w_out, s, e)
+        #   -> permute(0, 1, 3, 2, 4, 5) -> reshape(b, h_out*w_out, e*s^2)
+        # A different reshape/transpose order scrambles the channels and corrupts
+        # the projection (image features become garbled).
         bsz, seq, embed_dim = x.shape
-        height = width = int(seq**0.5)
+        seq_root = int(seq**0.5)
+        assert seq_root**2 == seq, f"sequence length {seq} is not a perfect square"
+        assert (
+            seq_root % scale_factor == 0
+        ), f"grid {seq_root} not divisible by pixel-shuffle factor {scale_factor}"
 
-        # Reshape to spatial grid
+        height = width = seq_root
+        h_out = height // scale_factor
+        w_out = width // scale_factor
+
         x = x.reshape(bsz, height, width, embed_dim)
-
-        # Downsample width
-        x = x.reshape(bsz, height, int(width / scale_factor), embed_dim * scale_factor)
-
-        # Transpose and downsample height
-        x = x.transpose(0, 2, 1, 3)
-        x = x.reshape(
-            bsz,
-            int(width / scale_factor),
-            int(height / scale_factor),
-            embed_dim * (scale_factor**2),
-        )
-
-        # Transpose back and flatten
-        x = x.transpose(0, 2, 1, 3)
-        x = x.reshape(bsz, int(seq / (scale_factor**2)), embed_dim * (scale_factor**2))
+        x = x.reshape(bsz, h_out, scale_factor, w_out, scale_factor, embed_dim)
+        x = x.transpose(0, 1, 3, 2, 4, 5)
+        x = x.reshape(bsz, h_out * w_out, embed_dim * scale_factor**2)
         return x
 
     def __call__(self, vision_features: mx.array) -> mx.array:
@@ -117,9 +117,9 @@ class MLPProjection(nn.Module):
         # Output: (batch, 49, 576)
         projected = self.proj(shuffled)
 
-        # Return projection output directly (no normalization/scaling here)
-        # Scaling will be applied in model.py before concatenation to avoid
-        # disrupting pretrained weights
+        # Return the projected features directly. No extra scaling anywhere: the
+        # trained proj Linear already maps vision features into the language
+        # embedding space (matches huggingface/nanoVLM).
         return projected
 
 
