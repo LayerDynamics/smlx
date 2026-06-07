@@ -331,6 +331,47 @@ register(
 # --------------------------------------------------------------------------- #
 
 
+# Real OCR via a real VLM (mlx-vlm SmolVLM-500M) prompted to transcribe text.
+# The bespoke TrOCR/Donut impls diverge architecturally from real TrOCR/BART and
+# can't be made correct by weight-mapping; this is the working OCR path.
+_OCR_REPO = "smolvlm-500m"
+_OCR_PROMPT = (
+    "Transcribe all the text in this image exactly, preserving line breaks. Output only the text."
+)
+
+
+def _ocr_vlm_loader():
+    from smlx.models import mlx_backend
+
+    return mlx_backend.load(_OCR_REPO)
+
+
+def _ocr_vlm_runner(loaded, *, text=None, image=None, audio=None, document, **opts):
+    from smlx.models import mlx_backend
+
+    out = mlx_backend.generate(
+        loaded, _OCR_PROMPT, image=document, max_tokens=opts.get("max_tokens", 256)
+    )
+    return RunOutput(
+        kind="text",
+        status=WeightStatus.TRAINED,
+        reason="SmolVLM-500M OCR (mlx-vlm)",
+        text=(out or "").strip(),
+    )
+
+
+register(
+    RunEntry(
+        "ocr",
+        "ocr",
+        ("document",),
+        _ocr_vlm_loader,
+        _ocr_vlm_runner,
+        note="Real OCR via SmolVLM-500M (mlx-vlm) — transcribes document text",
+    )
+)
+
+
 def _trocr_loader():
     from smlx.models.TrOCR_small import load
 
