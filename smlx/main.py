@@ -555,7 +555,9 @@ def models_verify(model, quantize, max_tokens, enforce_perf):
             if not perf_ok:
                 perf_fails += 1
         except Exception as e:
-            click.echo(f"{key:<16} {'ERROR':<7} {'-':>11}  {'-':<5} {type(e).__name__}: {str(e)[:32]}")
+            click.echo(
+                f"{key:<16} {'ERROR':<7} {'-':>11}  {'-':<5} {type(e).__name__}: {str(e)[:32]}"
+            )
             failures += 1
 
     click.echo("-" * 78)
