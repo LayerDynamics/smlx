@@ -80,14 +80,21 @@ class Model(nn.Module):
         # Get text embeddings
         inputs_embeds = self.language_model.embed_tokens(input_ids)
 
-        # Process image through vision encoder
-        # Note: MLX expects [B, H, W, C] but preprocessing gives [B, C, H, W]
-        # Handle both single image and batch
-        if len(pixel_values.shape) == 4:
-            # Batch of images [B, C, H, W] -> [B, H, W, C]
+        # Process image through vision encoder. Preprocessing gives one of:
+        # - HF AutoProcessor: [B, num_sub_images, C, H, W] (large images split into
+        #   sub-images, each expanded to the right number of <image> tokens)
+        # - custom processor: [B, C, H, W] (batch) or [C, H, W] (single)
+        # MLX vision model expects channel-last [..., H, W, C].
+        if len(pixel_values.shape) == 5:
+            # HF processor format: [B, num_sub_images, C, H, W]. Take the first
+            # batch element -> [num_sub_images, H, W, C]; the connector pixel-shuffles
+            # each sub-image into its token block.
+            pixel_values_mlx = pixel_values[0].transpose(0, 2, 3, 1)
+        elif len(pixel_values.shape) == 4:
+            # Custom processor batch [B, C, H, W] -> [B, H, W, C]
             pixel_values_mlx = pixel_values.transpose(0, 2, 3, 1)
         else:
-            # Single image [C, H, W] -> [H, W, C]
+            # Single image [C, H, W] -> [1, H, W, C]
             pixel_values_mlx = pixel_values.transpose(1, 2, 0)
             pixel_values_mlx = mx.expand_dims(pixel_values_mlx, axis=0)
 
@@ -95,7 +102,7 @@ class Model(nn.Module):
             pixel_values_mlx, output_hidden_states=True
         )
 
-        # Project vision features to language space
+        # Project vision features to language space (connector does pixel shuffle)
         image_features = pooler_output.astype(inputs_embeds.dtype)
         image_features = self.connector(image_features)
 
@@ -121,7 +128,7 @@ class Model(nn.Module):
         """
         image_token_index = self.config.image_token_index
 
-        # Find positions of <image> tokens (assuming batch size 1 for now)
+        # Find positions of <image> tokens (assuming batch size 1)
         image_positions = np.where(input_ids == image_token_index)[1].tolist()
 
         if not image_positions:
@@ -130,47 +137,37 @@ class Model(nn.Module):
 
         num_images, num_patches, vision_hidden_size = image_features.shape
 
-        # Reshape image features for insertion: [num_images * num_patches, hidden_size]
-        reshaped_image_hidden_states = image_features.reshape(-1, vision_hidden_size)
-
         # Cast to match input embeddings dtype
-        reshaped_image_hidden_states = reshaped_image_hidden_states.astype(inputs_embeds.dtype)
+        image_features = image_features.astype(inputs_embeds.dtype)
 
-        # Replace <image> tokens with image features by building a new array
-        # For SmolVLM: Each image replaces num_patches consecutive <image> tokens
-        # Build list of embedding chunks
-        batch_size = inputs_embeds.shape[0]
-        result_parts = []
+        # The HF processor expands each <image> placeholder into exactly the number
+        # of vision tokens the encoder produces, so this is a 1:1 replacement (no
+        # change in sequence length). Reshape features to [1, total_tokens, hidden].
+        reshaped_image_features = image_features.reshape(1, -1, vision_hidden_size)
 
-        for b in range(batch_size):
-            parts = []
-            last_pos = 0
-            image_idx = 0
+        num_image_tokens = len(image_positions)
+        num_image_features = reshaped_image_features.shape[1]
+        if num_image_tokens != num_image_features:
+            raise ValueError(
+                f"Token count mismatch: found {num_image_tokens} <image> token positions "
+                f"but have {num_image_features} vision features "
+                f"(image_features {image_features.shape}). This indicates a mismatch "
+                f"between processor token expansion and vision encoder output."
+            )
 
-            for pos in image_positions:
-                # Add text embeddings before this image position
-                if pos > last_pos:
-                    parts.append(inputs_embeds[b:b+1, last_pos:pos, :])
-
-                # Add image embeddings
-                img_start = image_idx * num_patches
-                img_end = (image_idx + 1) * num_patches
-                image_embeds = reshaped_image_hidden_states[img_start:img_end, :]
-                # Add batch dimension: [num_patches, hidden_size] -> [1, num_patches, hidden_size]
-                parts.append(mx.expand_dims(image_embeds, axis=0))
-
-                last_pos = pos + 1
-                image_idx += 1
-
-            # Add remaining text embeddings after last image
-            if last_pos < inputs_embeds.shape[1]:
-                parts.append(inputs_embeds[b:b+1, last_pos:, :])
-
-            # Concatenate all parts for this batch
-            result_parts.append(mx.concatenate(parts, axis=1))
-
-        # Concatenate all batches
-        return mx.concatenate(result_parts, axis=0)
+        # MLX can't do in-place positional assignment; use put_along_axis to place
+        # each vision feature at its <image> token position (1:1, seq_len unchanged).
+        position_indices = mx.array(image_positions).reshape(1, -1, 1)
+        position_indices_broadcast = mx.broadcast_to(
+            position_indices, reshaped_image_features.shape
+        )
+        final_embeds = mx.put_along_axis(
+            inputs_embeds,
+            position_indices_broadcast,
+            reshaped_image_features,
+            axis=1,
+        )
+        return final_embeds
 
     @property
     def layers(self):

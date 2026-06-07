@@ -43,12 +43,23 @@ def test_smollm2_360m_real_text():
 
 
 def test_smolvlm_500m_describes_giraffes(giraffe_image_path):
-    pytest.skip(
-        "WS-2: SmolVLM-500M loads but generates only whitespace (48 space tokens) on the "
-        "same code path the 256M variant works on — a 500M weight-mapping/sanitize bug in "
-        "smlx/models/SmolVLM_500M_Instruct/loader.py. Fix the HF->MLX key mapping (likely "
-        "lm_head/tied-embeddings or vision-projector keys), then assert real output."
+    from PIL import Image
+
+    from smlx.models.SmolVLM_500M_Instruct import generate, load
+
+    model, processor = load("HuggingFaceTB/SmolVLM-500M-Instruct")
+    with Image.open(giraffe_image_path) as im:
+        image = im.convert("RGB")
+    out = generate(
+        model,
+        processor,
+        prompt="Describe this image in one sentence.",
+        image=image,
+        max_tokens=48,
+        temperature=0.0,
     )
+    A.assert_text_coherent(out, context="SmolVLM-500M")
+    A.assert_contains_any(out, ["giraffe", "giraffes", "animal", "tree"], context="SmolVLM-500M")
 
 
 def test_nanovlm_describes_giraffes(giraffe_image_path):

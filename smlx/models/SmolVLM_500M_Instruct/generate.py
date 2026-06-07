@@ -72,34 +72,44 @@ def prepare_inputs(
     Returns:
         Dictionary with input_ids and pixel_values
     """
-    # Load and preprocess images if provided
+    # Prefer the HuggingFace AutoProcessor, which expands each <image> placeholder
+    # into exactly the number of vision tokens the encoder produces (required for the
+    # 1:1 image-token replacement in the model). Detect it by its HF-specific attrs.
+    is_hf_processor = (
+        hasattr(processor, "image_seq_len")
+        and hasattr(processor, "image_processor")
+        and hasattr(processor, "tokenizer")
+    )
+
+    if is_hf_processor and image is not None:
+        images = image if isinstance(image, list) else [image]
+        loaded_images = [load_image(img) if isinstance(img, str) else img for img in images]
+        if image_token not in prompt:
+            prompt = (image_token + "\n") * len(images) + prompt
+        inputs = processor(text=prompt, images=loaded_images, return_tensors="np")
+        return {
+            "input_ids": mx.array(inputs["input_ids"]),
+            "pixel_values": (
+                mx.array(inputs["pixel_values"]) if "pixel_values" in inputs else None
+            ),
+        }
+
+    # Fallback: custom processor path.
     pixel_values = None
     if image is not None:
-        if not isinstance(image, list):
-            images = [image]
-        else:
-            images = image
-
-        # Load images
+        images = image if isinstance(image, list) else [image]
         loaded_images = [load_image(img) if isinstance(img, str) else img for img in images]
-
-        # Preprocess images
         processed_images = processor.image_processor(loaded_images)
         pixel_values = mx.array(np.stack(processed_images))
-
-        # Add <image> tokens to prompt if not already present
         if image_token not in prompt:
-            # Prepend image tokens (one per image)
             prompt = (image_token + "\n") * len(images) + prompt
 
-    # Tokenize text
     inputs = processor.tokenizer(
         prompt,
         return_tensors="np",
         padding=False,
         truncation=False,
     )
-
     input_ids = mx.array(inputs["input_ids"])
 
     return {
