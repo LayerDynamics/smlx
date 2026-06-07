@@ -187,9 +187,7 @@ class TestCADDecoder:
         encoder_hidden_states = mx.random.normal((batch_size, 20, 576))
 
         # Decoder creates causal mask internally
-        decoder_output = cad_decoder(
-            cad_input_ids, encoder_hidden_states=encoder_hidden_states
-        )
+        decoder_output = cad_decoder(cad_input_ids, encoder_hidden_states=encoder_hidden_states)
 
         assert decoder_output.shape == (batch_size, seq_len, 256)
 
@@ -343,17 +341,27 @@ class TestSmolGenCadModel:
         assert next_token.size == 1
 
     def test_num_params_property(self, model):
-        """Test num_params property."""
+        """num_params must count the whole (nested) parameter tree.
+
+        Regression: parameters() is a nested dict+list tree, so iterating its
+        top-level .values() saw sub-trees (not arrays) and undercounted to 0.
+        The model is ~147M params; assert it matches a tree_flatten recount and
+        is in the right order of magnitude, not merely ``>= 0``.
+        """
+        from mlx.utils import tree_flatten
+
         num_params = model.num_params
-        # Should return an integer (may be 0 if not initialized)
+        expected = sum(arr.size for _, arr in tree_flatten(model.parameters()))
         assert isinstance(num_params, int)
-        assert num_params >= 0
+        assert num_params == expected
+        assert num_params > 100_000_000, f"expected ~147M params, got {num_params}"
 
     def test_num_params_millions_property(self, model):
-        """Test num_params_millions property."""
+        """num_params_millions reports the real size (regression for the 0.0M bug)."""
         num_params_millions = model.num_params_millions
         assert isinstance(num_params_millions, float)
-        assert num_params_millions >= 0
+        assert num_params_millions == pytest.approx(model.num_params / 1_000_000)
+        assert num_params_millions > 100.0
 
     def test_sanitize_weights(self, model):
         """Test weight sanitization."""
@@ -446,9 +454,7 @@ class TestModelIntegration:
             )
 
             # Append to sequence
-            cad_ids = mx.concatenate(
-                [cad_ids, mx.array([[next_token]], dtype=mx.int32)], axis=1
-            )
+            cad_ids = mx.concatenate([cad_ids, mx.array([[next_token]], dtype=mx.int32)], axis=1)
 
         # Should have BOS + max_new_tokens
         assert cad_ids.shape == (batch_size, 1 + max_new_tokens)
@@ -473,18 +479,14 @@ class TestModelConfiguration:
 
     def test_custom_encoder_config(self):
         """Test model with custom encoder configuration."""
-        config = SmolGenCadConfig(
-            encoder=EncoderConfig(hidden_size=576)  # Explicit
-        )
+        config = SmolGenCadConfig(encoder=EncoderConfig(hidden_size=576))  # Explicit
         model = SmolGenCad(config)
 
         assert model.encoder.hidden_size == 576
 
     def test_custom_decoder_config(self):
         """Test model with custom decoder configuration."""
-        config = SmolGenCadConfig(
-            decoder=DecoderConfig(num_hidden_layers=6, hidden_size=256)
-        )
+        config = SmolGenCadConfig(decoder=DecoderConfig(num_hidden_layers=6, hidden_size=256))
         model = SmolGenCad(config)
 
         assert len(model.decoder.layers) == 6

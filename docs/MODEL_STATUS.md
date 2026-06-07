@@ -60,8 +60,12 @@ Not yet verified (honest status — **not** dropped, just not done):
 - ⛔ **OCR** (TrOCR, Donut) — TrOCR's custom DeiT/BART encoder has a residual
   numerics bug; the intended path is a dedicated OCR model via mlx-vlm
   (florence2 / deepseek-ocr) using the same backend pattern.
-- ⛔ **CAD** (smolGenCad) — SMLX-native 158M text-to-CAD model; needs its own
-  verify path and confirmation it emits valid CAD sequences from real weights.
+- 🟡 **CAD** (smolGenCad) — SMLX-native ~147M text-to-CAD model. The **generation
+  pipeline is verified to produce real, well-formed output** end to end (a valid
+  CAD command sequence + parseable CadQuery Python + JSON), covered by
+  `tests/models/smolGenCad/test_generate.py`. It ships with **random-initialised
+  weights** (no public checkpoint), so the CAD *content* is not yet meaningful —
+  trained-quality correctness is the remaining gap, not the pipeline.
 
 ## Quantization (SMLX value-add)
 

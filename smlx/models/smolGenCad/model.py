@@ -266,16 +266,15 @@ class SmolGenCad(nn.Module):
 
     @property
     def num_params(self) -> int:
-        """Get total number of parameters."""
-        total = 0
-        for p in self.parameters().values():
-            if hasattr(p, "size"):
-                total += p.size
-            elif hasattr(p, "shape"):
-                import mlx.core as mx
+        """Get total number of parameters.
 
-                total += int(mx.prod(mx.array(p.shape)).item())
-        return total
+        ``parameters()`` returns a nested tree (dicts *and* lists of layers), so
+        the leaves must be flattened before summing — iterating ``.values()``
+        directly sees sub-trees, not arrays, and undercounts to zero.
+        """
+        from mlx.utils import tree_flatten
+
+        return sum(arr.size for _, arr in tree_flatten(self.parameters()))
 
     @property
     def num_params_millions(self) -> float:
