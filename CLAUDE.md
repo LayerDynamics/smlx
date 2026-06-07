@@ -4,9 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SMLX (Smol MLX) is a Python package for small models (< 1B parameters) using Apple's MLX framework, optimized for M4 chipsets. Focus areas: vision, voice, language, and multimodal models.
+SMLX (Smol MLX) is a Python package for small, efficient models using Apple's MLX
+framework, optimized for M4 chipsets. Focus areas: vision, voice, language, and
+multimodal models.
 
-**Critical Requirement**: All models must be "smol" (< 1B parameters, preferably < 500M).
+**Critical Requirement — performance-based inclusion (not a hard parameter cap).**
+A model qualifies for the SMLX zoo if it meets all three *performance* gates on the
+M4 target, regardless of exact parameter count:
+
+1. **Memory**: loads and runs inference within the 36 GB unified-memory budget (with
+   headroom), using the presets in `smlx/config/model_profiles.py`.
+2. **Speed**: meets its modality's performance floor (WS-3 bench gate — e.g. tok/s,
+   first-token latency, RTF).
+3. **Correctness**: produces real, correct output (passes the `tests/smoke`
+   real-output assertion — no placeholder/noise).
+
+Parameter count is a **guideline, not a gate**: target < 500M, prefer < 1B, but a
+larger model (e.g. a ~1.5–1.8B VLM that still fits memory and runs acceptably) is
+admitted as a documented **performance exception**. The name "smol" reflects
+*on-device efficiency*, not a strict size limit.
 
 ## Known Defects — Deceptive or Wrong Code (RESOLVED)
 

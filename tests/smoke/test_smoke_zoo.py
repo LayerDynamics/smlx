@@ -77,19 +77,19 @@ def test_nanovlm_describes_giraffes(giraffe_image_path):
 
 def test_moondream2_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2 (gated, SMOL VIOLATION): the common vikhyatk/moondream2 is ~1.8B params, "
-        "exceeding the <1B 'smol' core requirement. DECISION NEEDED: drop Moondream2 or "
-        "find a <1B variant before investing in its load/inference path."
+        "WS-2: Moondream2 (~1.8B) is IN SCOPE under the performance-based inclusion policy "
+        "(fits the M4 memory budget; size is a guideline, not a gate). Remaining: verify "
+        "real-weights load + image-conditioned generation produce a correct description."
     )
 
 
 def test_tinyllava_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2 (gated, SMOL VIOLATION): the wired model is bczhou/TinyLLaVA-1.5B = ~1.5B "
-        "params, exceeding the <1B 'smol' core requirement. It also currently echoes the "
-        "prompt back instead of answering ('What is in this image?' -> 'What is in this "
-        "image?'). DECISION NEEDED: drop TinyLLaVA, or find a <1B TinyLLaVA variant. Only "
-        "then is fixing the prompt-echo generation bug worthwhile."
+        "WS-2: TinyLLaVA-1.5B is IN SCOPE under the performance-based inclusion policy "
+        "(~1.5B fits the M4 memory budget; size is a guideline, not a gate). Remaining "
+        "fix: it currently echoes the prompt back ('What is in this image?' -> same) "
+        "instead of generating an answer — a generation/prompt-template bug to resolve "
+        "before it can assert real output."
     )
 
 

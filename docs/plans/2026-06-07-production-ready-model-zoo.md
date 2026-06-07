@@ -124,5 +124,23 @@ Per-model, in dependency order (see §5). For each: load real weights → run on
 
 ---
 
+## 8. Inclusion policy update (2026-06-07 decision)
+
+Zoo membership is gated by **performance**, not a hard parameter-count cap. A
+model is admitted iff it clears three gates on the M4 reference (encoded in
+`smlx/config/inclusion_policy.py`, tested in `tests/test_inclusion_policy.py`):
+
+1. **Memory** — peak inference memory ≤ 30 GB (36 GB budget − 6 GB headroom).
+2. **Speed** — meets its modality's WS-3 floor (uncalibrated until WS-3).
+3. **Correctness** — passes the WS-0 real-output smoke assertion.
+
+Parameter count is a guideline (target < 500M, prefer < 1B). Consequently the
+two formerly "smol-violating" VLMs are **in scope as performance exceptions**:
+
+- **TinyLLaVA-1.5B** — fits memory; remaining bug: generation echoes the prompt.
+- **Moondream2 (~1.8B)** — fits memory; remaining: verify image-conditioned output.
+
+This supersedes the earlier §6 "smol compliance" risk for these two models.
+
 ### Appendix — verified-this-session evidence
 SmolLM2-135M (wikitext ppl ≈ 26), SmolVLM-256M (correct coco8 captions), Whisper-tiny (WER ≈ 10%), MiniLM (correct semantic ranking) — the ✅ baseline the rest is measured against.
