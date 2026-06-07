@@ -116,6 +116,11 @@ audio = [
     # (PIPELINE-ONLY noise) TTS entries are available.
     "mlx-audio>=0.4.0",
     "misaki[en]>=0.7.0",
+    # Real Silero VAD v5 via onnxruntime (`smlx run silero-vad`). silero-vad
+    # bundles the ONNX model; the runner reads it WITHOUT importing the package
+    # (so no torch is pulled), with a Hub download as fallback.
+    "onnxruntime>=1.16.0",
+    "silero-vad>=5.1",
 ]
 
 # Tools dependencies (for model conversion and downloading)

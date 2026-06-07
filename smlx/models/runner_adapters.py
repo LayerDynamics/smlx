@@ -452,24 +452,87 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _silero_loader():
-    from smlx.models.SileroVAD import load
+# Real Silero VAD v5 via onnxruntime — the bespoke SMLX SileroVAD runs on random
+# weights, and the `silero-vad` Python package imports torchaudio (broken ABI in
+# some envs). Locate the package's bundled ONNX model WITHOUT importing it (so no
+# torch is pulled), and run it directly. The v5 model requires a 64-sample context
+# prepended to each 512-sample frame; without it the probabilities are ~0.
 
-    return load()
+
+def _silero_onnx_path():
+    import importlib.util
+    import os
+
+    spec = importlib.util.find_spec("silero_vad")  # does not execute the package
+    for base in getattr(spec, "submodule_search_locations", None) or []:
+        cand = os.path.join(base, "data", "silero_vad.onnx")
+        if os.path.exists(cand):
+            return cand
+    # Fallback: fetch the ONNX from the Hub (no torch dependency).
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id="onnx-community/silero-vad", filename="onnx/model.onnx")
+
+
+def _silero_loader():
+    import onnxruntime as ort
+
+    return ort.InferenceSession(_silero_onnx_path())
+
+
+def _load_audio_16k(audio):
+    import librosa
+    import numpy as np
+
+    if isinstance(audio, str):
+        import soundfile as sf
+
+        arr, sr = sf.read(audio)
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim > 1:
+            arr = arr.mean(axis=1)
+    else:
+        arr = np.asarray(audio, dtype=np.float32)
+        sr = 16000
+    if sr != 16000:
+        arr = librosa.resample(arr, orig_sr=sr, target_sr=16000)
+    return arr, 16000
 
 
 def _silero_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
-    from smlx.models.SileroVAD import detect_speech
+    import numpy as np
 
-    segments = detect_speech(loaded, audio, return_timestamps=True)
-    payload = []
-    for s in segments if isinstance(segments, list) else []:
-        if hasattr(s, "start") and hasattr(s, "end"):
-            payload.append({"start": float(s.start), "end": float(s.end)})
-        else:
-            payload.append({"value": str(s)})
-    status, reason = _status(loaded, untrained_reason="random weights: segments not trustworthy")
-    return RunOutput(kind="segments", status=status, reason=reason, data=payload)
+    sess = loaded
+    arr, sr = _load_audio_16k(audio)
+    win, ctx, thresh = 512, 64, float(opts.get("threshold", 0.5))
+    state = np.zeros((2, 1, 128), dtype=np.float32)
+    context = np.zeros((1, ctx), dtype=np.float32)
+    probs = []
+    for i in range(0, len(arr) - win + 1, win):
+        chunk = arr[i : i + win][None, :].astype(np.float32)
+        x = np.concatenate([context, chunk], axis=1)  # v5 needs 64-sample context
+        out = sess.run(None, {"input": x, "state": state, "sr": np.array(sr, dtype=np.int64)})
+        probs.append(float(out[0].reshape(-1)[0]))
+        state = out[1]
+        context = chunk[:, -ctx:]
+    # Group consecutive speech frames into (start, end) second segments.
+    speech = np.array(probs) > thresh
+    segments, start = [], None
+    for j, s in enumerate(speech):
+        t = j * win / sr
+        if s and start is None:
+            start = t
+        elif not s and start is not None:
+            segments.append({"start": round(start, 2), "end": round(t, 2)})
+            start = None
+    if start is not None:
+        segments.append({"start": round(start, 2), "end": round(len(speech) * win / sr, 2)})
+    return RunOutput(
+        kind="segments",
+        status=WeightStatus.TRAINED,
+        reason=f"Silero VAD v5 (onnx): {len(segments)} speech segment(s)",
+        data=segments,
+    )
 
 
 register(
@@ -479,7 +542,7 @@ register(
         ("audio",),
         _silero_loader,
         _silero_runner,
-        note="Silero voice-activity detection",
+        note="Real Silero VAD v5 (onnxruntime) — speech segments",
     )
 )
 
