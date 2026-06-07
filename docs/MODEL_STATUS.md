@@ -41,10 +41,27 @@ committed floor — see WS-3):
 | `smolvlm-500m` | vision-language | mlx-vlm | 500M | ✅ PASS | ~52 | HuggingFaceTB/SmolVLM-500M-Instruct |
 | `smolvlm2-2.2b` | vision-language | mlx-vlm | 2.2B | ✅ PASS | ~14 | mlx-community/SmolVLM2-2.2B-Instruct-mlx |
 | `qwen2-vl-2b` | vision-language | mlx-vlm | 2B | ✅ PASS | ~33 | mlx-community/Qwen2-VL-2B-Instruct-4bit |
-| `whisper-tiny` | ASR | SMLX-native | 39M | ✅ PASS | ~33 | mlx-community/whisper-tiny |
-| `minilm` | embeddings | SMLX-native | 23M | ✅ PASS | — | sentence-transformers/all-MiniLM-L6-v2 |
+| `whisper-tiny` | ASR | SMLX-native | 39M | ✅ PASS | 1.3s/clip | mlx-community/whisper-tiny |
+| `minilm` | embeddings | SMLX-native | 23M | ✅ PASS | ~291 sent/s | sentence-transformers/all-MiniLM-L6-v2 |
 
-**10/10 produce real, correct output.** (Latest full run: all PASS.)
+**10/10 produce real, correct output**, and all clear `verify --enforce-perf`
+(language/VLM/embeddings have calibrated speed floors; ASR/TTS RTF is reported but
+not yet floor-gated). Latest full run: 10/10 PASS.
+
+## Modality coverage (what's verified vs remaining)
+
+The named target zoo spans seven modalities. Verified today:
+
+- ✅ **Language**, ✅ **Vision-language**, ✅ **ASR**, ✅ **Embeddings** — in the zoo above.
+
+Not yet verified (honest status — **not** dropped, just not done):
+
+- ⛔ **TTS** (Orpheus, Chatterbox) — gated on real public weights.
+- ⛔ **OCR** (TrOCR, Donut) — TrOCR's custom DeiT/BART encoder has a residual
+  numerics bug; the intended path is a dedicated OCR model via mlx-vlm
+  (florence2 / deepseek-ocr) using the same backend pattern.
+- ⛔ **CAD** (smolGenCad) — SMLX-native 158M text-to-CAD model; needs its own
+  verify path and confirmation it emits valid CAD sequences from real weights.
 
 ## Quantization (SMLX value-add)
 

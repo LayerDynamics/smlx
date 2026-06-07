@@ -77,14 +77,17 @@ jobs:
             tests/test_packaging.py
 
   # ---------------------------------------------------------------------------
-  # Model verify + perf gate — heavy (downloads the curated zoo). Runs on a
-  # push to main or when manually dispatched with run_model_verify=true.
+  # Model verify + perf gate — heavy (downloads the multi-GB curated zoo).
+  # Manual dispatch only: the speed floors in inclusion_policy are calibrated on
+  # an M4, whereas GitHub's macos-14 runners are slower M1s on shared hardware,
+  # so --enforce-perf failures there would reflect the runner, not a regression.
+  # Run it on demand from the Actions tab (run_model_verify=true) on an M4-class
+  # machine; the floors are the authoritative gate locally.
   # ---------------------------------------------------------------------------
   model-verify:
     runs-on: macos-14
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_model_verify)
+      github.event_name == 'workflow_dispatch' && inputs.run_model_verify
     needs: [lint, unit]
     timeout-minutes: 60
     steps:
