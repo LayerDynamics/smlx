@@ -278,6 +278,9 @@ outputs/
 results/
 experiments/
 
+# `smlx run` output artifacts (audio/CAD/json produced at runtime)
+data/output/
+
 # Local configuration overrides
 config.local.yml
 config.local.json
