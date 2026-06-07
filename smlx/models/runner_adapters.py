@@ -563,8 +563,15 @@ def _yamnet_runner(loaded, *, text=None, image=None, audio, document=None, **opt
 
     preds = classify(loaded, audio, top_k=opts.get("top_k", 5))
     payload = [{"label": p.label, "score": float(p.score)} for p in preds]
-    status, reason = _status(loaded)
-    return RunOutput(kind="labels", status=status, reason=reason, data=payload)
+    # Real weights load and the (now-fixed) MobileNet forward runs end to end, but
+    # the bespoke log-mel feature extraction does not yet match YAMNet's expected
+    # input, so the predicted labels are not yet reliable. Honest gap, not random.
+    return RunOutput(
+        kind="labels",
+        status=WeightStatus.TRAINED_GAP,
+        reason="real weights + forward; log-mel feature extraction mismatch -> labels unreliable",
+        data=payload,
+    )
 
 
 register(
@@ -574,7 +581,7 @@ register(
         ("audio",),
         _yamnet_loader,
         _yamnet_runner,
-        note="YAMNet audio-event classification",
+        note="YAMNet audio-event classification (real weights; feature-extraction gap)",
     )
 )
 

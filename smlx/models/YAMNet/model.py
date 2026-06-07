@@ -47,13 +47,17 @@ class DepthwiseSeparableConv2D(nn.Module):
         """
         super().__init__()
 
-        # Depthwise convolution (one filter per input channel)
+        # Depthwise convolution (one filter per input channel). groups=in_channels
+        # is what makes it depthwise — without it this was a full conv expecting
+        # in_channels input planes per filter, which mismatches the (C,3,3,1)
+        # depthwise weights and breaks the forward pass.
         self.depthwise = nn.Conv2d(
             in_channels=in_channels,
             out_channels=int(in_channels * depth_multiplier),
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            groups=in_channels,
         )
 
         # Pointwise convolution (1x1 conv to combine channels)
