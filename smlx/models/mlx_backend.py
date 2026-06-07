@@ -22,10 +22,11 @@ from PIL import Image
 
 
 class Backend(str, Enum):
-    """Which upstream library runs a model's forward pass."""
+    """Which implementation runs a model's forward pass."""
 
-    MLX_LM = "mlx_lm"  # language models (llama-family, etc.)
-    MLX_VLM = "mlx_vlm"  # vision-language models
+    MLX_LM = "mlx_lm"  # language models (llama-family, etc.) via mlx-lm
+    MLX_VLM = "mlx_vlm"  # vision-language models via mlx-vlm
+    SMLX = "smlx"  # SMLX's own verified MLX impls (ASR/embeddings not in mlx-lm/vlm)
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,12 @@ ZOO: dict[str, ZooEntry] = {
     "qwen2-vl-2b": ZooEntry(
         "qwen2-vl-2b", "mlx-community/Qwen2-VL-2B-Instruct-4bit", "vlm", Backend.MLX_VLM, "2B"
     ),
+    # --- Audio / embeddings (SMLX's own verified MLX implementations; these
+    #     modalities are not provided by mlx-lm / mlx-vlm) ---
+    "whisper-tiny": ZooEntry(
+        "whisper-tiny", "mlx-community/whisper-tiny", "asr", Backend.SMLX, "39M"
+    ),
+    "minilm": ZooEntry("minilm", "all-MiniLM-L6-v2", "embeddings", Backend.SMLX, "23M"),
 }
 
 # VLM architecture hints for auto-detecting an unregistered repo id.
@@ -99,11 +106,12 @@ class BackendModel:
     """A loaded model plus the metadata needed to run it uniformly."""
 
     model: Any
-    processor: Any  # tokenizer (LM) or processor (VLM)
+    processor: Any  # tokenizer (LM/ASR) or processor (VLM)
     backend: Backend
     repo: str
     config: Any | None = None  # mlx-vlm config (needed for chat templating)
     quantized: bool = False
+    modality: str = "language"  # language | vlm | asr | embeddings
 
 
 def resolve(model_id: str) -> tuple[str, Backend | None, str | None]:
@@ -141,7 +149,7 @@ def load(
     Returns:
         A :class:`BackendModel`.
     """
-    repo, detected, _modality = resolve(model_id)
+    repo, detected, modality = resolve(model_id)
     backend = backend or detected or Backend.MLX_LM
 
     if backend is Backend.MLX_VLM:
@@ -150,17 +158,53 @@ def load(
 
         model, processor = vlm_load(repo, lazy=lazy)
         config = load_config(repo)
-        bm = BackendModel(model, processor, backend, repo, config=config)
+        bm = BackendModel(
+            model, processor, backend, repo, config=config, modality=modality or "vlm"
+        )
+    elif backend is Backend.SMLX:
+        # SMLX's own verified implementations for modalities mlx-lm/mlx-vlm
+        # don't cover (ASR via Whisper, sentence embeddings via MiniLM).
+        if modality == "asr":
+            from smlx.models.Whisper_tiny import load as whisper_load
+
+            model, tokenizer = whisper_load(repo)
+            bm = BackendModel(model, tokenizer, backend, repo, modality="asr")
+        elif modality == "embeddings":
+            from smlx.models.MiniLM import load as minilm_load
+
+            model, tokenizer = minilm_load(repo)
+            bm = BackendModel(model, tokenizer, backend, repo, modality="embeddings")
+        else:
+            raise ValueError(f"SMLX-native backend has no handler for modality {modality!r}")
     else:
         from mlx_lm import load as lm_load
 
         model, tokenizer = lm_load(repo)
-        bm = BackendModel(model, tokenizer, backend, repo)
+        bm = BackendModel(model, tokenizer, backend, repo, modality=modality or "language")
 
     if quantize:
         apply_quantization(bm, quantize)
 
     return bm
+
+
+def transcribe(bm: BackendModel, audio) -> str:
+    """Transcribe audio with an ASR backend model (Whisper)."""
+    if bm.modality != "asr":
+        raise ValueError(f"transcribe() requires an ASR model, got modality {bm.modality!r}")
+    from smlx.models.Whisper_tiny import transcribe as whisper_transcribe
+
+    result = whisper_transcribe(audio, bm.model, bm.processor, language="en", verbose=None)
+    return (result.get("text") or "").strip()
+
+
+def embed(bm: BackendModel, sentences) -> Any:
+    """Embed sentences with an embeddings backend model (MiniLM)."""
+    if bm.modality != "embeddings":
+        raise ValueError(f"embed() requires an embeddings model, got modality {bm.modality!r}")
+    from smlx.models.MiniLM import encode
+
+    return encode(bm.model, bm.processor, sentences)
 
 
 def apply_quantization(bm: BackendModel, preset: str) -> BackendModel:

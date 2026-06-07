@@ -490,16 +490,31 @@ def models_verify(model, quantize, max_tokens):
         entry = backend.ZOO[key]
         try:
             bm = backend.load(key, quantize=quantize)
-            prompt = (
-                "What is in this image?"
-                if entry.modality == "vlm"
-                else "In one sentence, what is MLX?"
-            )
-            img = image_path if entry.modality == "vlm" else None
             t0 = time.perf_counter()
-            out = backend.generate(bm, prompt, image=img, max_tokens=max_tokens)
+            if entry.modality == "asr":
+                # Transcribe a bundled LibriSpeech clip; check it's real text.
+                from smlx.data import local as _local
+
+                audio = _local.load("librispeech_sample")[0]["audio"]["array"]
+                out = backend.transcribe(bm, audio)
+                ok = _looks_like_real_text(out)
+            elif entry.modality == "embeddings":
+                import numpy as _np
+
+                emb = _np.asarray(backend.embed(bm, ["a cat sleeps", "a kitten naps"]))
+                # Correct: 2-D, finite, and the two related sentences are similar.
+                ok = emb.ndim == 2 and bool(_np.isfinite(emb).all())
+                out = f"embeddings shape {emb.shape}"
+            else:
+                prompt = (
+                    "What is in this image?"
+                    if entry.modality == "vlm"
+                    else "In one sentence, what is MLX?"
+                )
+                img = image_path if entry.modality == "vlm" else None
+                out = backend.generate(bm, prompt, image=img, max_tokens=max_tokens)
+                ok = _looks_like_real_text(out)
             dt = time.perf_counter() - t0
-            ok = _looks_like_real_text(out)
             n_words = len((out or "").split())
             tps = n_words / dt if dt > 0 else 0.0
             snippet = " ".join((out or "").split())[:48]
