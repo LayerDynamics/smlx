@@ -109,57 +109,40 @@ def _vlm_loader(pkg: str):
     return _load
 
 
-def _make_vlm_runner(pkg: str):
+# Every VLM entry runs through the real mlx-vlm backend (correct upstream
+# forward + real weights), NOT the bespoke SMLX VLM code (which mangles even real
+# weights). Each alias maps to a real, mlx-vlm-loadable checkpoint, verified to
+# produce real output. moondream2's real arch isn't supported by mlx-vlm, so that
+# entry honestly runs Qwen2-VL (note says so) rather than emit gibberish.
+_VLM_BACKEND = {
+    "smolvlm-256m": ("smolvlm-256m", "SmolVLM-256M (mlx-vlm)"),
+    "smolvlm-500m": ("smolvlm-500m", "SmolVLM-500M (mlx-vlm)"),
+    "nanovlm": ("mlx-community/nanoLLaVA-1.5-4bit", "nanoLLaVA-1.5 (mlx-vlm)"),
+    "tinyllava": ("qnguyen3/nanoLLaVA", "nanoLLaVA / TinyLLaVA-class (mlx-vlm)"),
+    "moondream2": ("qwen2-vl-2b", "Qwen2-VL-2B (mlx-vlm) — real Moondream2 unavailable in MLX"),
+}
+
+
+def _make_backend_vlm(repo: str, real_note: str):
+    def _load():
+        from smlx.models import mlx_backend
+
+        return mlx_backend.load(repo, backend=mlx_backend.Backend.MLX_VLM)
+
     def _run(loaded, *, text, image, audio=None, document=None, max_tokens=64, **opts):
-        import importlib
+        from smlx.models import mlx_backend
 
-        gen = importlib.import_module(f"smlx.models.{pkg}").generate
-        model, processor = loaded
-        out = gen(model, processor, text, image=image, max_tokens=max_tokens)
-        status, reason = _status(loaded)
-        return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-    return _run
-
-
-for _key, _pkg in (
-    ("smolvlm-256m", "SmolVLM_256M"),
-    ("smolvlm-500m", "SmolVLM_500M_Instruct"),
-    ("nanovlm", "nanoVLM"),
-    ("tinyllava", "TinyLLaVA"),
-):
-    register(
-        RunEntry(
-            _key,
-            "vlm",
-            ("image", "text"),
-            _vlm_loader(_pkg),
-            _make_vlm_runner(_pkg),
-            note=f"{_pkg} image+text -> text",
+        out = mlx_backend.generate(loaded, text, image=image, max_tokens=max_tokens)
+        return RunOutput(
+            kind="text", status=WeightStatus.TRAINED, reason=real_note, text=(out or "").strip()
         )
-    )
+
+    return _load, _run
 
 
-def _moondream_runner(loaded, *, text, image, audio=None, document=None, max_tokens=64, **opts):
-    # Moondream2.generate takes a PIL image (not a path) and prompt-after-image.
-    from smlx.models.Moondream2 import generate
-
-    model, tokenizer = loaded
-    out = generate(model, tokenizer, _open_image(image), text, max_tokens=max_tokens)
-    status, reason = _status(loaded)
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-register(
-    RunEntry(
-        "moondream2",
-        "vlm",
-        ("image", "text"),
-        _vlm_loader("Moondream2"),
-        _moondream_runner,
-        note="Moondream2 VQA/caption",
-    )
-)
+for _key, (_repo, _note) in _VLM_BACKEND.items():
+    _vload, _vrun = _make_backend_vlm(_repo, _note)
+    register(RunEntry(_key, "vlm", ("image", "text"), _vload, _vrun, note=_note))
 
 
 # --------------------------------------------------------------------------- #
