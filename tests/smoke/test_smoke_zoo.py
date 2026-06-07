@@ -77,15 +77,19 @@ def test_nanovlm_describes_giraffes(giraffe_image_path):
 
 def test_moondream2_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2: confirm a <1B Moondream2 variant + real-weights load (the common "
-        "vikhyatk/moondream2 is ~1.8B, violating the smol requirement)."
+        "WS-2 (gated, SMOL VIOLATION): the common vikhyatk/moondream2 is ~1.8B params, "
+        "exceeding the <1B 'smol' core requirement. DECISION NEEDED: drop Moondream2 or "
+        "find a <1B variant before investing in its load/inference path."
     )
 
 
 def test_tinyllava_describes_giraffes(giraffe_image_path):
     pytest.skip(
-        "WS-2: verify TinyLLaVA real-weights load and resolve the 27-vs-26 vision-layer "
-        "config/weights mismatch before asserting real output."
+        "WS-2 (gated, SMOL VIOLATION): the wired model is bczhou/TinyLLaVA-1.5B = ~1.5B "
+        "params, exceeding the <1B 'smol' core requirement. It also currently echoes the "
+        "prompt back instead of answering ('What is in this image?' -> 'What is in this "
+        "image?'). DECISION NEEDED: drop TinyLLaVA, or find a <1B TinyLLaVA variant. Only "
+        "then is fixing the prompt-echo generation bug worthwhile."
     )
 
 
