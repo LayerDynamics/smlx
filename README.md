@@ -78,22 +78,26 @@ entry loads, runs, and produces real (coherent / correct) output. See
 - **SmolVLM-256M / -500M-Instruct** ✓ — compact vision-language understanding (mlx-vlm)
 - **SmolVLM2-2.2B-Instruct** ✓ — larger multimodal model (mlx-vlm)
 - **Qwen2-VL-2B-Instruct** ✓ — 4-bit VLM (mlx-vlm)
+- **nanoVLM / TinyLLaVA** ✓ — compact VLMs (mlx-vlm)
 
 ### Audio Models
 
-- **Whisper-tiny** ✓ — speech recognition (SMLX-native MLX impl)
+- **Whisper-tiny** ✓ — speech recognition (mlx-whisper)
+- **AST (AudioSet)** ✓ — audio classification (transformers)
+- **Kokoro** ✓ — text-to-speech (mlx-audio)
+- **Silero VAD** ✓ — voice-activity detection (onnxruntime)
 
-### Embedding Models
+### Embedding / OCR / CAD
 
-- **MiniLM / all-MiniLM-L6-v2** ✓ — sentence embeddings (SMLX-native MLX impl)
+- **MiniLM / all-MiniLM-L6-v2** ✓ — sentence embeddings (mlx-embeddings)
+- **OCR** ✓ — document text recognition (SmolVLM via mlx-vlm)
+- **CAD** ✓ — text-to-CAD parametric generation (deterministic CadQuery parser)
 
-### Not yet in the verified zoo
-
-Legacy hand-written implementations exist for **Moondream2, TinyLLaVA, nanoVLM,
-TrOCR-small, Donut-base, Orpheus-150M (TTS), Chatterbox (TTS), YAMNet, Silero VAD**.
-Some are correct and some have known forward-path issues — they are not yet covered
-by `smlx models verify` and are documented in
-[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md). Prefer the curated zoo above.
+Every entry above is verified end to end by `smlx run --verify`. The earlier
+bespoke hand-written model packages were removed; each modality now runs through
+a maintained upstream implementation (mlx-lm / mlx-vlm / mlx-whisper /
+mlx-embeddings / mlx-audio / onnxruntime / transformers) or real deterministic
+code, so there is no separate "unverified" tier.
 
 ## Installation
 
@@ -213,16 +217,16 @@ smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
 ```python
 from smlx.agents import ReActAgent
 from smlx.agents.tools import ToolRegistry, calculator, get_time
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load_model
 
 # Setup
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load_model("mlx-community/SmolLM2-135M-Instruct")
 registry = ToolRegistry()
 registry.register(calculator)
 registry.register(get_time)
 
 # Create agent
-agent = ReActAgent(model, tokenizer, registry)
+agent = ReActAgent(bm.model, bm.processor, registry)
 
 # Run task
 response = agent.run("What is 15 * 23, and what time is it?")
@@ -260,25 +264,26 @@ Comprehensive guides are available in the `docs/` directory:
 
 Working examples demonstrating all features:
 
+Every model runs through one real entrypoint — `smlx run` (see **Quick Start**):
+
 ```bash
-# Language model examples
-python examples/models/smollm2_135m/smollm2_135m_example.py
+# Real output from any model, verified by the fail-closed gate
+smlx run --list                                    # every runnable model
+smlx run smollm2-135m --text "What is MLX?"        # language
+smlx run whisper-tiny --audio clip.wav             # audio transcription
+smlx run ocr --document scan.png                   # OCR (SmolVLM via mlx-vlm)
+smlx run kokoro --text "Hello world"               # TTS -> data/output/kokoro.wav
+smlx run --verify                                  # correctness gate, all models
+```
 
-# Audio transcription
-python examples/whisper_tiny/basic_transcription.py
+Standalone scripts under `examples/` cover the non-model subsystems (quant,
+gym/RL, server, eval, tools):
 
-# OCR examples
-python examples/models/trocr_small/trocr_example.py
-
-# Quantization examples
-python examples/quant/gptq_example.py
-python examples/quant/lora_example.py
-
-# Evaluation examples
-python examples/eval/mmmu_eval.py
-
-# Agent examples
-python examples/agents/react_agent_example.py
+```bash
+python examples/quant/fp4_comparison.py            # quantization
+python examples/gym/dqn_cartpole.py                # RL / gym
+python examples/server/openai_compatible.py        # OpenAI-compatible server
+python examples/eval/vlm_eval_example.py           # evaluation
 ```
 
 ## CLI Tools
@@ -361,12 +366,13 @@ smlx/
 ├── agents/              # Agent system (ReAct, CoT, tools)
 ├── bench/               # Performance benchmarking
 ├── evals/               # Evaluation benchmarks
-├── models/              # Model implementations
-│   ├── SmolLM2_135M/    # Language models
-│   ├── SmolVLM_256M/    # Vision-language models
-│   ├── Whisper_tiny/    # Audio models
-│   ├── TrOCR_small/     # Document models
-│   └── MiniLM/          # Embedding models
+├── models/              # Model layer
+│   ├── runner.py        # Unified runner: one entrypoint per curated model
+│   ├── runner_verify.py # Fail-closed per-modality correctness gate
+│   ├── mlx_backend.py   # load/generate/transcribe/embed over upstream impls
+│   ├── registry.py      # Legacy load_model API (delegates to mlx_backend)
+│   ├── cad.py           # Deterministic text-to-CAD parser
+│   └── common/          # Shared layers (attention, MLP, MoE/switch)
 ├── quant/               # Quantization (GPTQ, AWQ, LoRA)
 ├── server/              # REST API server
 ├── tools/               # CLI utilities

@@ -442,9 +442,10 @@ class TestFullEvaluation:
 
         # This test would load a real model and run evaluation
         # Skipped by default to avoid long test times
-        from smlx.models.SmolLM2_135M import load
+        from smlx.models import mlx_backend
 
-        model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+        bm = mlx_backend.load("mlx-community/SmolLM2-135M-Instruct")
+        model, tokenizer = bm.model, bm.processor
 
         results = evaluate_perplexity(
             model=model,

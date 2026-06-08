@@ -68,14 +68,20 @@ for _key, _repo in _LM_BACKEND.items():
 # weights). Each alias maps to a real, mlx-vlm-loadable checkpoint, verified to
 # produce real output. moondream2's real arch isn't supported by mlx-vlm, so that
 # entry honestly runs Qwen2-VL (note says so) rather than emit gibberish.
-# moondream2 is QUARANTINED: real Moondream2 isn't supported by mlx-vlm, and the
-# Qwen2-VL-4bit substitute is degenerate on basic vision (answers "blue" for every
-# solid color) — it fails the correctness gate, so it is not wired here.
+# moondream2 is QUARANTINED: the original Moondream2 architecture isn't supported
+# by mlx-vlm (only moondream3 is), and the Qwen2-VL-4bit substitute is degenerate
+# on basic vision (answers "blue" for every solid color) — it fails the gate. The
+# moondream3-preview 4-bit checkpoint below IS supported by mlx-vlm and passes the
+# correctness gate, so the Moondream family is represented by moondream3.
 _VLM_BACKEND = {
     "smolvlm-256m": ("smolvlm-256m", "SmolVLM-256M (mlx-vlm)"),
     "smolvlm-500m": ("smolvlm-500m", "SmolVLM-500M (mlx-vlm)"),
     "nanovlm": ("mlx-community/nanoLLaVA-1.5-4bit", "nanoLLaVA-1.5 (mlx-vlm)"),
     "tinyllava": ("qnguyen3/nanoLLaVA", "nanoLLaVA / TinyLLaVA-class (mlx-vlm)"),
+    "moondream3": (
+        "beshkenadze/moondream3-preview-mlx-4bit",
+        "Moondream3-preview 4-bit (mlx-vlm)",
+    ),
 }
 
 
@@ -511,7 +517,7 @@ def _cad_loader():
 def _cad_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
     import json
 
-    from smlx.models.smolGenCad.text_to_cad import generate as cad_generate
+    from smlx.models.cad import generate as cad_generate
 
     r = cad_generate(text, validate=True)
     payload = {

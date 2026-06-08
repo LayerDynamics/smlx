@@ -167,10 +167,9 @@ def benchmark_quantized_model(
     Returns:
         QuantizationBenchmarkResult with metrics
     """
-    try:
-        from smlx.models.SmolLM2_135M.generate import generate, stream_generate
-    except ImportError as e:
-        raise ImportError("SmolLM2_135M model required for benchmarks") from e
+    from mlx_lm import generate as lm_generate
+    from mlx_lm import stream_generate as lm_stream_generate
+    from mlx_lm.sample_utils import make_sampler
 
     model_name = getattr(model, "model_type", "unknown")
 
@@ -189,12 +188,12 @@ def benchmark_quantized_model(
     num_prompt_tokens = len(prompt_tokens)
 
     # Warmup
-    _ = generate(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=test_prompt,
+    _ = lm_generate(
+        model,
+        tokenizer,
+        test_prompt,
         max_tokens=10,
-        temperature=0.0,
+        sampler=make_sampler(temp=0.0),
         verbose=False,
     )
 
@@ -213,15 +212,15 @@ def benchmark_quantized_model(
     token_times: list[float] = []
     with memory_profiler() as mem:
         start_time = time.perf_counter()
-        for piece in stream_generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=test_prompt,
+        for resp in lm_stream_generate(
+            model,
+            tokenizer,
+            test_prompt,
             max_tokens=generation_tokens,
-            temperature=0.0,
+            sampler=make_sampler(temp=0.0),
         ):
             token_times.append(time.perf_counter())
-            token_pieces.append(piece)
+            token_pieces.append(resp.text)
         end_time = time.perf_counter()
 
     total_time = end_time - start_time
@@ -290,10 +289,7 @@ def compare_quantization_methods(
     if quantization_methods is None:
         quantization_methods = ["fp16"]
 
-    try:
-        from smlx.models.SmolLM2_135M import load
-    except ImportError as e:
-        raise ImportError("SmolLM2_135M model required") from e
+    from smlx.models import mlx_backend
 
     if verbose:
         print("=" * 70)
@@ -315,7 +311,8 @@ def compare_quantization_methods(
         if verbose:
             print("Loading model...")
 
-        model, tokenizer = load(model_path)
+        bm = mlx_backend.load(model_path)
+        model, tokenizer = bm.model, bm.processor
 
         # Apply quantization
         if verbose:

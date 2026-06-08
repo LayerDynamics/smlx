@@ -60,17 +60,11 @@ For critical debugging, run tests outside pytest:
 #!/usr/bin/env python3
 """Standalone test runner."""
 
-from smlx.models.SileroVAD import load, create_streaming_vad
-import numpy as np
+from smlx.models import runner
 
-# Create simple test
-vad = load(sample_rate=16000)
-streaming = create_streaming_vad(vad)
-
-# Process test audio
-audio = np.random.randn(512).astype(np.float32)
-probs = streaming.process_chunk(audio)
-print(f"Success! Probs: {probs}")
+# VAD runs through the real Silero v5 model (onnxruntime) via the runner.
+result = runner.produce("silero-vad", audio="speech.wav")
+print(f"Success! {result.text}")
 ```
 
 ### Resource Management
@@ -79,13 +73,15 @@ print(f"Success! Probs: {probs}")
 
 ```python
 @pytest.fixture(scope="function")  # Not "module"!
-def vad_model():
-    """Load model for single test."""
-    model = load(sample_rate=16000)
-    yield model
+def model():
+    """Load a model for a single test."""
+    from smlx.models import load
+
+    m = load("smollm2-135m")
+    yield m
     # Cleanup
-    del model
-    mx.metal.clear_cache()  # Clear MLX cache if available
+    del m
+    mx.clear_cache()  # Release MLX buffers between tests
 ```
 
 #### For Integration Tests

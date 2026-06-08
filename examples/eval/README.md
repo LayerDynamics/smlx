@@ -54,11 +54,12 @@ python vlm_eval_example.py
 ### Evaluate a Text Model
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.evals.text_eval import evaluate_perplexity
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Evaluate
 results = evaluate_perplexity(
@@ -74,11 +75,12 @@ print(f"Perplexity: {results['perplexity']:.2f}")
 ### Evaluate a VLM (When Available)
 
 ```python
-from smlx.models.SmolVLM_256M import load
+from smlx.models import load
 from smlx.evals.math_vista import evaluate_math_vista
 
 # Load VLM
-model, processor = load("SmolVLM-256M-Instruct")
+bm = load("smolvlm-256m")
+model, processor = bm.model, bm.processor
 
 # Evaluate
 results = evaluate_math_vista(

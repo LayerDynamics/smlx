@@ -470,13 +470,13 @@ Examples:
         print(f"Loading model: {args.model}")
 
     try:
-        # Try SmolLM2_135M loader
-        from smlx.models.SmolLM2_135M import load
+        from smlx.models import mlx_backend
 
-        model, tokenizer = load(args.model)
+        bm = mlx_backend.load(args.model)
+        model, tokenizer = bm.model, bm.processor
     except Exception as e:
         print(f"Error loading model: {e}", file=sys.stderr)
-        print("Ensure the model is a valid SmolLM2 model.", file=sys.stderr)
+        print("Ensure the model is a valid MLX language model.", file=sys.stderr)
         sys.exit(1)
 
     # Count parameters

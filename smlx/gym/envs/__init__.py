@@ -25,14 +25,6 @@ Example:
 """
 
 # Text environments
-# Audio environments
-from smlx.gym.envs.audio_task import (
-    AudioClassificationEnv,
-    AudioTask,
-    AudioTaskEnv,
-    SpeechRecognitionEnv,
-    create_audio_env,
-)
 from smlx.gym.envs.text_world import (
     InstructionFollowingEnv,
     QAEnv,
@@ -63,10 +55,4 @@ __all__ = [
     "ImageClassificationEnv",
     "VisualQAEnv",
     "create_vision_env",
-    # Audio
-    "AudioTaskEnv",
-    "AudioTask",
-    "SpeechRecognitionEnv",
-    "AudioClassificationEnv",
-    "create_audio_env",
 ]

@@ -24,6 +24,18 @@ larger model (e.g. a ~1.5–1.8B VLM that still fits memory and runs acceptably)
 admitted as a documented **performance exception**. The name "smol" reflects
 *on-device efficiency*, not a strict size limit.
 
+> **Architecture pivot (current state).** SMLX no longer hand-implements model
+> forward passes. The 17 bespoke model packages under `smlx/models/<Name>/` and the
+> old `smlx_router`/`smlx_runner`/`smlx_manager` framework were **removed**; every
+> curated model now runs through a maintained upstream library (mlx-lm / mlx-vlm /
+> mlx-whisper / mlx-embeddings / mlx-audio / onnxruntime / transformers) or real
+> deterministic code, behind the unified runner (`smlx run`, see *Model Execution
+> Framework* below). The two "Known/Outstanding Defects" sections that follow are a
+> **historical audit trail**: many entries cite files in those now-deleted packages.
+> They are retained as a record — do not treat a defect in a removed package as live
+> work; the modality it covered is served by a real backend and verified by
+> `smlx run --verify` (15/15).
+
 ## Known Defects — Deceptive or Wrong Code (RESOLVED)
 
 The items below were found by auditing the actual source (file:line cited) for code,
@@ -297,19 +309,22 @@ black .
 mypy smlx/
 ```
 
-### Running Examples
+### Running Models
+
+Every curated model runs through one real entrypoint — `smlx run` (gate-verified):
 
 ```bash
-# Language models
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/models/smollm2_135m/smollm2_135m_example.py
-
-# Vision-language models
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/smolvlm_256m/basic_vqa.py
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/vlm/moondream2/object_detection_example.py
-
-# Audio models
-/Users/ryanoboyle/miniforge3/envs/smlx/bin/python examples/models/whisper_tiny/basic_transcription.py
+PY=/Users/ryanoboyle/miniforge3/envs/smlx/bin/python
+$PY -m smlx.main run --list                                   # every runnable model
+$PY -m smlx.main run smollm2-135m --text "What is MLX?"       # language
+$PY -m smlx.main run smolvlm-256m -i photo.jpg --text "What is this?"  # VLM
+$PY -m smlx.main run whisper-tiny --audio clip.wav            # ASR
+$PY -m smlx.main run ocr --document scan.png                  # OCR
+$PY -m smlx.main run --verify                                 # fail-closed gate (15/15)
 ```
+
+Standalone scripts under `examples/` cover the non-model subsystems (quant, gym/RL,
+server, eval).
 
 ### Command-Line Interface (`smlx/main.py`)
 
@@ -343,12 +358,14 @@ script — `smlx = "smlx.main:main"` in `pyproject.toml [project.scripts]` — s
 
 ```
 smlx/
-├── models/          # Model implementations (SmolLM2, SmolVLM, Whisper, etc.)
-│   ├── common/      # Shared model components (attention, MLP, embeddings)
-│   ├── registry.py  # Universal model loading and discovery
-│   ├── smlx_router.py   # Model routing and capability detection
-│   ├── smlx_runner.py   # Inference execution framework
-│   └── smlx_manager.py  # Model lifecycle and caching
+├── models/          # Model layer (curated models run via upstream impls)
+│   ├── common/      # Shared model components (attention, MLP, MoE/switch layers)
+│   ├── runner.py        # Unified runner: REGISTRY + produce()/produce_all()
+│   ├── runner_adapters.py  # Registers each curated alias with its real backend
+│   ├── runner_verify.py    # Fail-closed per-modality correctness gate
+│   ├── mlx_backend.py   # load/generate/transcribe/embed over upstream libs
+│   ├── registry.py      # Legacy load_model() API (delegates to mlx_backend)
+│   └── cad.py           # Deterministic text-to-CAD parser
 ├── quant/           # Quantization (GPTQ, AWQ, LoRA, DoRA, 4-bit, 8-bit, etc.)
 ├── utils/           # Shared utilities (generation, sampling, loading, memory)
 ├── config/          # Per-model memory profiles & safe-parameter presets (OOM guards)
@@ -369,51 +386,59 @@ here over hardcoding generation limits when adding a model.
 
 ### Model Execution Framework
 
-Three-layer architecture for universal model handling:
+SMLX does **not** re-implement model forward passes. Every curated model runs
+through a maintained upstream implementation (or real deterministic code), behind
+one unified layer:
 
-1. **Router** (`smlx_router.py`) - Detects model capabilities and routes to appropriate handler
-2. **Runner** (`smlx_runner.py`) - Executes inference with unified configuration
-3. **Manager** (`smlx_manager.py`) - Manages model lifecycle, caching, and telemetry
+1. **Runner** (`runner.py` + `runner_adapters.py`) — a `REGISTRY` mapping a short
+   alias to a `RunEntry`; `produce(alias, text=/image=/audio=/document=)` runs the
+   model's real pipeline and returns an honest `RunResult`. `smlx run` is the CLI.
+2. **Backend** (`mlx_backend.py`) — `load()` returns a `BackendModel`
+   (`.model` / `.processor` / `.backend` / `.repo` / `.modality` / `.quantized`);
+   `generate()` / `transcribe()` / `embed()` are the one-call entrypoints over
+   mlx-lm / mlx-vlm / mlx-whisper / mlx-embeddings.
+3. **Gate** (`runner_verify.py`) — `smlx run --verify` loads every model, runs a
+   real per-modality correctness check, and exits non-zero on any failure
+   (currently 15/15).
 
-**Universal model loading**:
+The earlier per-model "Model Execution Framework" (`smlx_router.py` /
+`smlx_runner.py` / `smlx_manager.py`) and the 17 bespoke model packages were
+**removed** — they hand-reimplemented forward passes and several emitted garbage.
+
+**Model loading**:
 
 ```python
+from smlx.models import load, generate
+
+m = load("smollm2-135m")              # BackendModel (mlx-lm)
+generate(m, "What is MLX?")
+
+m = load("smolvlm-256m", quantize="4bit")
+generate(m, "Describe this image.", image="photo.jpg")
+
+# Legacy alias: load_model(...) returns the same BackendModel
 from smlx.models import load_model
-
-# Auto-detect model type and load
-model, tokenizer = load_model("mlx-community/SmolLM2-135M-Instruct")
-
-# With quantization
-model, tokenizer = load_model("mlx-community/SmolLM2-135M-Instruct", quantization="4bit")
+bm = load_model("mlx-community/SmolLM2-135M-Instruct")
 ```
 
-### Implemented Models
+### Implemented Models (curated zoo — verified by `smlx run --verify`)
 
-**Language Models**:
+15 aliases, each routed to a real upstream backend (see `docs/MODEL_STATUS.md`):
 
-- SmolLM2_135M, SmolLM2_360M
+- **Language** (mlx-lm): `smollm2-135m`, `smollm2-360m`
+- **Vision-language** (mlx-vlm): `smolvlm-256m`, `smolvlm-500m`, `nanovlm`,
+  `tinyllava`, `moondream3`
+- **ASR** (mlx-whisper): `whisper-tiny`
+- **TTS** (mlx-audio / Kokoro): `kokoro`
+- **OCR** (SmolVLM via mlx-vlm): `ocr`
+- **VAD** (onnxruntime / Silero): `silero-vad`
+- **Audio classification** (transformers / AST): `ast`
+- **Embeddings** (mlx-embeddings): `minilm`, `all-minilm-l6-v2`
+- **CAD** (deterministic CadQuery parser): `cad`
 
-**Vision-Language Models**:
-
-- SmolVLM_256M, SmolVLM_500M_Instruct, nanoVLM, Moondream2, TinyLLaVA
-
-**Audio Models**:
-
-- Whisper_tiny, Chatterbox (TTS), Orpheus_150M (TTS), YAMNet, SileroVAD
-
-**Document/OCR**:
-
-- TrOCR_small, Donut_base
-
-**Embeddings**:
-
-- MiniLM (full implementation in `MiniLM/model.py`)
-- all_MiniLM_L6_v2 (thin wrapper around MiniLM — no own `model.py`)
-
-**CAD Generation**:
-
-- smolGenCad — 158M text-to-CAD model (SmolLM2-135M encoder + custom 8-layer
-  transformer decoder for parametric CAD sequence generation)
+Adding a model is a one-line entry in `runner_adapters.py` (alias → repo +
+modality), then `smlx run --verify <alias>`. No model code is needed when
+mlx-lm / mlx-vlm support the architecture.
 
 ### Server Architecture (FastAPI)
 
@@ -461,32 +486,32 @@ If something is called but missing, it should be **implemented, not removed**. M
 - Line length: 100 characters (configured in pyproject.toml)
 - Use Black for formatting
 - Use Ruff for linting
-- Follow existing patterns from implemented models (SmolLM2_135M, Whisper_tiny)
+- Follow the runner/backend patterns (`runner_adapters.py`, `mlx_backend.py`), not
+  hand-written per-model forward passes
 
-### 4. Model Implementation Pattern
+### 4. Adding a Model
 
-This is the **SmolLM2-style template** for text/VLM generation models — it is the common
-layout, **not** a universal one. Audio models legitimately differ: e.g. `Whisper_tiny`
-uses `audio.py` / `decoding.py` / `transcribe.py` / `tokenizer.py` / `vad.py` instead of
-`generate.py` / `config.py` / `cache.py`. Follow the layout that fits the model class;
-match an existing model of the same modality rather than forcing this exact file set.
+There are **no per-model packages** — do not hand-reimplement forward passes (the
+17 bespoke packages were removed for exactly this reason). To add a model, register
+one `RunEntry` in `smlx/models/runner_adapters.py` that points an alias at a real
+upstream repo + modality, then prove it:
 
+```python
+# in runner_adapters.py — e.g. another mlx-vlm model
+_VLM_BACKEND["my-vlm"] = ("org/My-VLM-mlx-4bit", "My-VLM (mlx-vlm)")
 ```
-smlx/models/YourModel/            # SmolLM2-style (language / VLM) layout
-├── __init__.py       # Public API exports
-├── model.py          # Core architecture (inherit from mlx.nn.Module)
-├── loader.py         # Load from HuggingFace Hub
-├── generate.py       # Generation logic (generate, stream_generate, chat)
-├── config.py         # Configuration management
-└── cache.py          # KV cache (if applicable)
+
+```bash
+smlx run --verify my-vlm        # must pass the fail-closed correctness gate
 ```
 
 **Key requirements**:
 
-- Must be < 1B parameters
-- Must use MLX operations throughout
-- Must support quantization (4-bit/8-bit)
-- Must follow existing API patterns
+- Routes to a maintained upstream impl (mlx-lm / mlx-vlm / mlx-whisper /
+  mlx-embeddings / mlx-audio / onnxruntime / transformers) or real deterministic code
+- Fits the 36 GB M4 memory budget and passes `smlx run --verify` (real output)
+- Param count is a guideline (prefer < 1B); a larger model is admitted as a
+  documented performance exception (e.g. the ~1.57B `moondream3`)
 
 ### 5. Use Shared Utilities
 

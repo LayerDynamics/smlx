@@ -429,7 +429,10 @@ def evaluate_whisper(
         ... )
         >>> print(f"WER: {results['wer']:.2%}")
     """
-    from smlx.models.Whisper_tiny import transcribe
+    import mlx_whisper
+
+    del tokenizer  # mlx-whisper loads/caches by repo; no separate tokenizer object
+    repo = getattr(model, "repo", model)
 
     if len(audio_files) != len(references):
         raise ValueError(
@@ -444,8 +447,8 @@ def evaluate_whisper(
         if verbose:
             print(f"Transcribing {i + 1}/{len(audio_files)}: {audio_file}")
 
-        result = transcribe(
-            str(audio_file), model, tokenizer, verbose=False, **transcribe_kwargs
+        result = mlx_whisper.transcribe(
+            str(audio_file), path_or_hf_repo=repo, **transcribe_kwargs
         )
         hypotheses.append(result["text"])
 

@@ -15,11 +15,12 @@ The SMLX agent system provides:
 ## Quick Start
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.agents import ReActAgent, create_default_registry
 
 # Load model
-model, tokenizer = load()
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Create agent with tools
 tools = create_default_registry()

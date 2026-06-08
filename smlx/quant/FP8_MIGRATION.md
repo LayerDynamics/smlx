@@ -92,11 +92,12 @@ error = mx.mean(mx.abs(restored - weights))
 
 **OLD (fp8.py):**
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import quantize_model_fp8, estimate_fp8_size
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Estimate size (simulated)
 stats = estimate_fp8_size(model, group_size=64)
@@ -109,11 +110,12 @@ quantized_weights = quantize_model_fp8(model, format="e4m3", group_size=64)
 
 **NEW (mxfp8.py):**
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import quantize_model_mxfp8, estimate_mxfp8_size
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Estimate size (true 8-bit)
 stats = estimate_mxfp8_size(model)
@@ -353,11 +355,11 @@ print(f"MXFP8 error: {mxfp8_error:.6f}")
 ### 3. Verify Memory Savings
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import estimate_mxfp8_size
 import mlx.core as mx
 
-model, _ = load("mlx-community/SmolLM2-135M-Instruct")
+model = load("smollm2-135m").model
 
 stats = estimate_mxfp8_size(model)
 print(f"Original: {stats['current_mb']:.1f} MB")

@@ -95,136 +95,42 @@ class ModelManager:
 
             print(f"📦 Loading model: {model_id} (type: {model_type})")
 
-            # Load model based on type
-            if model_type == "smollm":
-                model, tokenizer = await self._load_smollm(model_id)
-            elif model_type == "whisper":
-                model, tokenizer = await self._load_whisper(model_id)
-            elif model_type == "embedding":
-                model, tokenizer = await self._load_embedding(model_id)
-            elif model_type == "vlm":
-                model, tokenizer = await self._load_vlm(model_id)
-            else:
-                raise ValueError(f"Unsupported model type: {model_type}")
+            bm = await self._load_backend(model_id, model_type)
 
-            # Cache management
+            # Cache management (LRU eviction)
             if len(self.loaded_models) >= self.cache_size:
-                # Remove least recently used model
                 lru_model_id = next(iter(self.loaded_models))
-                print(f"🗑️  Evicting model from cache: {lru_model_id}")
                 del self.loaded_models[lru_model_id]
                 del self.model_types[lru_model_id]
 
-            # Cache the model
-            self.loaded_models[model_id] = (model, tokenizer)
+            self.loaded_models[model_id] = bm
             self.model_types[model_id] = model_type
-
             print(f"✅ Model loaded: {model_id}")
+            return bm
 
-            return model, tokenizer
+    async def _load_backend(self, model_id: str, model_type: str):
+        from smlx.models import mlx_backend as B
 
-    async def _load_smollm(self, model_id: str) -> tuple[Any, Any]:
-        """Load SmolLM model with optional quantization."""
-        # Normalize model ID
-        if model_id == "SmolLM2-135M":
-            model_id = "mlx-community/SmolLM2-135M-Instruct"
-        elif model_id == "SmolLM2-360M":
-            model_id = "mlx-community/SmolLM2-360M-Instruct"
-
-        # Import and load
-        if "135M" in model_id:
-            from smlx.models.SmolLM2_135M import load
-        elif "360M" in model_id:
-            from smlx.models.SmolLM2_360M import load
+        if model_type == "whisper":
+            repo, backend = "whisper-tiny", None
+        elif model_type == "embedding":
+            repo, backend = "minilm", None
+        elif model_type == "smollm":
+            repo = {
+                "SmolLM2-135M": "mlx-community/SmolLM2-135M-Instruct",
+                "SmolLM2-360M": "mlx-community/SmolLM2-360M-Instruct",
+            }.get(model_id, model_id)
+            backend = B.Backend.MLX_LM
+        elif model_type == "vlm":
+            repo, backend = model_id, B.Backend.MLX_VLM
         else:
-            raise ValueError(f"Unknown SmolLM variant: {model_id}")
+            raise ValueError(f"Unsupported model type: {model_type}")
 
-        # Load model in thread pool to avoid blocking
+        quantize = self.auto_quantize if self.auto_quantize in ("4bit", "8bit") else None
         loop = asyncio.get_event_loop()
-
-        # Apply quantization if auto_quantize is set
-        if self.auto_quantize:
-            print(f"   Applying {self.auto_quantize} quantization...")
-            model, tokenizer = await loop.run_in_executor(
-                None,
-                lambda: load(
-                    model_id,
-                    quantize=self.auto_quantize,
-                    quantization_config=self.quantization_config,
-                ),
-            )
-        else:
-            model, tokenizer = await loop.run_in_executor(None, load, model_id)
-
-        return model, tokenizer
-
-    async def _load_whisper(self, model_id: str) -> tuple[Any, Any]:
-        """Load Whisper model."""
-        from smlx.models.Whisper_tiny import load
-
-        loop = asyncio.get_event_loop()
-        model, tokenizer = await loop.run_in_executor(None, load, model_id)
-
-        return model, tokenizer
-
-    async def _load_embedding(self, model_id: str) -> tuple[Any, Any]:
-        """Load embedding model (MiniLM-based sentence transformers)."""
-        # Normalize model ID to supported variants
-        if model_id in ["all-MiniLM-L6-v2", "minilm", "embedding"]:
-            variant = "all-MiniLM-L6-v2"
-        elif "minilm" in model_id.lower():
-            # Use the model_id as-is (might be a HuggingFace path)
-            variant = model_id
-        else:
-            # Assume it's a sentence-transformers model
-            variant = model_id
-
-        from smlx.models.MiniLM import load
-
-        loop = asyncio.get_event_loop()
-        model, tokenizer = await loop.run_in_executor(None, load, variant)
-
-        return model, tokenizer
-
-    async def _load_vlm(self, model_id: str) -> tuple[Any, Any]:
-        """Load vision-language model (returns model, processor)."""
-        model_id_lower = model_id.lower()
-
-        # Determine which VLM to load based on model ID
-        if "smolvlm-256m" in model_id_lower or model_id == "SmolVLM-256M":
-            from smlx.models.SmolVLM_256M import load
-
-            default_repo = "HuggingFaceTB/SmolVLM-256M-Instruct"
-        elif "smolvlm-500m" in model_id_lower or model_id == "SmolVLM-500M":
-            from smlx.models.SmolVLM_500M_Instruct import load
-
-            default_repo = "HuggingFaceTB/SmolVLM-500M-Instruct"
-        elif "nanovlm" in model_id_lower:
-            from smlx.models.nanoVLM import load
-
-            default_repo = "lusxvr/nanoVLM-222M"
-        elif "moondream" in model_id_lower:
-            from smlx.models.Moondream2 import load
-
-            default_repo = "vikhyatk/moondream2"
-        elif "tinyllava" in model_id_lower:
-            from smlx.models.TinyLLaVA import load
-
-            default_repo = "bczhou/TinyLLaVA-1.5B"
-        else:
-            raise ValueError(
-                f"Unknown VLM model: {model_id}. "
-                f"Supported: SmolVLM-256M, SmolVLM-500M, nanoVLM, Moondream2, TinyLLaVA"
-            )
-
-        # Use full HF path if provided, otherwise use default
-        repo = model_id if "/" in model_id else default_repo
-
-        # Load model in thread pool
-        loop = asyncio.get_event_loop()
-        model, processor = await loop.run_in_executor(None, load, repo)
-
-        return model, processor
+        return await loop.run_in_executor(
+            None, lambda: B.load(repo, backend=backend, quantize=quantize)
+        )
 
     def _infer_model_type(self, model_id: str) -> str:
         """

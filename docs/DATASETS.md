@@ -429,10 +429,11 @@ python -m smlx.tools.download_data --model whisper-tiny
 
 ```python
 from smlx.evals.math_vista import MathVistaEval
-from smlx.models.SmolVLM_256M import load
+from smlx.models import load
 
 # Load model
-model, processor = load("mlx-community/SmolVLM-256M-Instruct")
+bm = load("smolvlm-256m")
+model, processor = bm.model, bm.processor
 
 # Run evaluation
 evaluator = MathVistaEval(data_dir="data/benchmark/mathvista")
@@ -444,10 +445,11 @@ print(f"Accuracy: {results['accuracy']:.2%}")
 
 ```python
 from smlx.evals.text_eval import WikiTextEval
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Run evaluation
 evaluator = WikiTextEval(data_dir="data/benchmark/wikitext")
@@ -459,7 +461,8 @@ print(f"Perplexity: {results['perplexity']:.2f}")
 
 ```python
 from smlx.evals.asr_eval import LibriSpeechEval
-from smlx.models.Whisper_tiny import transcribe
+
+# ASR runs through mlx-whisper (e.g. runner.produce("whisper-tiny", audio=...))
 
 # Run benchmark evaluation
 evaluator = LibriSpeechEval(data_dir="data/benchmark/librispeech")

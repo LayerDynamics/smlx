@@ -176,10 +176,10 @@ def run_benchmark_suite(
 
             if suite_name == "llm":
                 # LLM benchmark needs model and tokenizer loaded
-                from smlx.models.SmolLM2_135M import load
-                model, tokenizer = load(model_path)
-                benchmark_args['model'] = model
-                benchmark_args['tokenizer'] = tokenizer
+                from smlx.models import mlx_backend
+                bm = mlx_backend.load(model_path)
+                benchmark_args['model'] = bm.model
+                benchmark_args['tokenizer'] = bm.processor
             else:
                 benchmark_args['model_path'] = model_path
 

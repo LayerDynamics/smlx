@@ -175,16 +175,13 @@ def assert_speech_intelligible(
     assert_audio_has_signal(audio, context=context)
 
     import librosa
-
-    from smlx.models.Whisper_tiny import load as load_whisper
-    from smlx.models.Whisper_tiny import transcribe
+    import mlx_whisper
 
     a = np.asarray(audio, dtype=np.float32).ravel()
     if sampling_rate != 16000:
         a = librosa.resample(a, orig_sr=sampling_rate, target_sr=16000)
 
-    model, tokenizer = load_whisper("mlx-community/whisper-tiny")
-    result = transcribe(a, model, tokenizer, language="en", verbose=None)
+    result = mlx_whisper.transcribe(a, path_or_hf_repo="mlx-community/whisper-tiny", language="en")
     hypothesis = (result.get("text") or "").strip()
     assert hypothesis, f"synthesized audio transcribed to nothing — not speech{where}"
     return assert_transcription(expected_text, hypothesis, max_wer=max_wer, context=context)

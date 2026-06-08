@@ -8,25 +8,21 @@ import asyncio
 import json
 import time
 import uuid
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from smlx.models.smlx_router import get_router
-from smlx.models.registry import infer_model_type
-
 from ..dependencies import get_model_manager
 from ..model_manager import ModelManager
 from ..schemas import (
+    ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
-    ChatCompletionChoice,
-    ChatCompletionChunk,
-    Message,
-    Usage,
     FinishReason,
+    Message,
     Role,
+    Usage,
 )
 
 router = APIRouter()
@@ -44,31 +40,28 @@ async def create_chat_completion(
     """
     try:
         # Load model
-        model, tokenizer = await manager.load_model(request.model)
+        bm = await manager.load_model(request.model)
 
         # Handle streaming
         if request.stream:
             return StreamingResponse(
-                stream_chat_completion(model, tokenizer, request),
+                stream_chat_completion(bm, request),
                 media_type="text/event-stream",
             )
 
         # Non-streaming chat completion
         response_text = await generate_chat_response(
-            model=model,
-            tokenizer=tokenizer,
+            bm=bm,
             messages=request.messages,
-            model_id=request.model,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
-            top_k=request.top_k,
         )
 
         # Calculate usage
         prompt_text = format_messages_as_prompt(request.messages)
-        prompt_tokens = len(tokenizer.encode(prompt_text))
-        completion_tokens = len(tokenizer.encode(response_text))
+        prompt_tokens = len(bm.processor.encode(prompt_text))
+        completion_tokens = len(bm.processor.encode(response_text))
 
         return ChatCompletionResponse(
             id=f"chatcmpl-{uuid.uuid4()}",
@@ -114,89 +107,48 @@ def format_messages_as_prompt(messages: list[Message]) -> str:
     return "\n\n".join(prompt_parts)
 
 
+def _chat_prompt(bm, messages: list[Message]) -> str:
+    message_dicts = [{"role": msg.role.value, "content": msg.content} for msg in messages]
+    return bm.processor.apply_chat_template(message_dicts, add_generation_prompt=True)
+
+
 async def generate_chat_response(
-    model,
-    tokenizer,
+    bm,
     messages: list[Message],
-    model_id: str,
     max_tokens: int,
     temperature: float,
     top_p: float,
-    top_k: int | None,
 ) -> str:
-    """Generate chat response using the model."""
-    # Get router and infer model type
-    router = get_router()
-    model_type = infer_model_type(model_id)
+    """Generate a chat response through mlx-lm."""
+    from mlx_lm import generate as lm_generate
+    from mlx_lm.sample_utils import make_sampler
 
-    if model_type is None:
-        raise ValueError(f"Could not infer model type from: {model_id}")
-
-    # Convert messages to dict format for router
-    message_dicts = [{"role": msg.role.value, "content": msg.content} for msg in messages]
-
-    # Run generation in thread pool
+    prompt = _chat_prompt(bm, messages)
+    sampler = make_sampler(temp=temperature, top_p=top_p)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
-        lambda: router.route_chat(
-            model_type=model_type,
-            model=model,
-            tokenizer=tokenizer,
-            messages=message_dicts,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k or 0,
-            verbose=False,
+        lambda: lm_generate(
+            bm.model, bm.processor, prompt, max_tokens=max_tokens, sampler=sampler, verbose=False
         ),
     )
-
-    # Extract only the assistant's response
-    response = result.strip()
-
-    return response
+    return result.strip()
 
 
-async def stream_chat_completion(
-    model, tokenizer, request: ChatCompletionRequest
-) -> AsyncGenerator[str, None]:
-    """Stream chat completion tokens as SSE."""
+async def stream_chat_completion(bm, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+    """Stream chat completion tokens as SSE (mlx-lm)."""
     try:
-        # Get router and infer model type
-        router = get_router()
-        model_type = infer_model_type(request.model)
+        from mlx_lm import stream_generate
+        from mlx_lm.sample_utils import make_sampler
 
-        if model_type is None:
-            raise ValueError(f"Could not infer model type from: {request.model}")
-
-        # Convert messages to dict format for router
-        message_dicts = [{"role": msg.role.value, "content": msg.content} for msg in request.messages]
-
-        # Format prompt for streaming (use router's chat method expects messages)
-        prompt = format_messages_as_prompt(request.messages)
+        prompt = _chat_prompt(bm, request.messages)
         completion_id = f"chatcmpl-{uuid.uuid4()}"
+        sampler = make_sampler(temp=request.temperature, top_p=request.top_p)
 
-        loop = asyncio.get_event_loop()
-
-        # Create generator in executor
-        def generate_tokens():
-            return router.route_streaming_generation(
-                model_type=model_type,
-                model=model,
-                tokenizer=tokenizer,
-                prompt=prompt,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                top_k=request.top_k or 0,
-            )
-
-        # Get the generator
-        token_stream = await loop.run_in_executor(None, generate_tokens)
-
-        # Stream each token
-        for token in token_stream:
+        for resp in stream_generate(
+            bm.model, bm.processor, prompt, max_tokens=request.max_tokens, sampler=sampler
+        ):
+            token = resp.text
             chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",

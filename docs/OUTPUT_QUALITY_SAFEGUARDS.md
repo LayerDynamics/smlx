@@ -147,11 +147,13 @@ SMLX's safeguard system consists of three layers:
 ### Basic Output Validation
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 from smlx.utils.validation import validate_text_output
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Generate text
 output = generate(model, tokenizer, "Explain AI:", max_tokens=100)
@@ -174,9 +176,11 @@ else:
 
 ```python
 from smlx.utils import GenerationConfig
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Configure with validation enabled
 config = GenerationConfig(
@@ -194,11 +198,12 @@ output = generate(model, tokenizer, "Tell me about space:", **config.__dict__)
 ### Model Loading with Integrity Checks
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.utils import verify_model_integrity, check_tokenizer_compatibility
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Verify model integrity
 verify_model_integrity(
@@ -282,9 +287,10 @@ Measure how well the model "likes" its own output:
 
 ```python
 from smlx.utils import calculate_perplexity
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 text = "The cat sat on the mat."
 perplexity = calculate_perplexity(model, tokenizer, text)
@@ -458,12 +464,14 @@ else:
 ### Compare Pre/Post Quantization
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 from smlx.quant import quantize_model
 from smlx.utils import assess_quality, compare_quality
 
 # Load full precision model
-model_fp, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model_fp, tokenizer = bm.model, bm.processor
 
 # Quantize to 4-bit
 model_4bit = quantize_model(model_fp, bits=4, group_size=64)

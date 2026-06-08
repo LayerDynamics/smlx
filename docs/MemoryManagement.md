@@ -68,11 +68,13 @@ SMLX provides a comprehensive memory management system designed to prevent crash
 ### Basic Usage
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 from smlx.utils.watchdog import watchdog
 
 # Load model
-model, tokenizer = load()
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Use watchdog for automatic protection
 with watchdog(warning_threshold=0.80, auto_cleanup=True):
@@ -811,7 +813,7 @@ with watchdog(check_interval=2.0):  # Check less frequently
 ### Complete Production Example
 
 ```python
-from smlx.models.SmolVLM_256M import load, generate
+from smlx.models import load, generate
 from smlx.utils.watchdog import watchdog
 from smlx.utils.robust import robust_generate
 from smlx.utils.degradation import with_graceful_degradation
@@ -819,7 +821,8 @@ from smlx.config.model_profiles import auto_select_params
 from smlx.utils.memory import smart_cleanup, MemoryMonitor
 
 # Initialize
-model, processor = load("HuggingFaceTB/SmolVLM-256M-Instruct")
+bm = load("smolvlm-256m")
+model, processor = bm.model, bm.processor
 monitor = MemoryMonitor()
 
 # Get safe parameters for this model
@@ -868,11 +871,13 @@ from smlx.utils.debug import (
     GraphAccumulationDetector,
     detect_leaking_modules
 )
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 
 # Load model with snapshot
 before_load = MemorySnapshot.capture("Before load")
-model, tokenizer = load()
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 after_load = MemorySnapshot.capture("After load")
 
 diff = compare_snapshots(before_load, after_load)

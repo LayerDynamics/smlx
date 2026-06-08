@@ -106,12 +106,20 @@ Available system memory: 28.4 GB / 36.0 GB
 
 ## Test Groups
 
-Tests are organized by model type:
+> **Historical note:** the per-model groupings and memory tables in this section
+> describe the original bespoke per-model test suites, which were removed when SMLX
+> pivoted to the unified runner (every model now runs through mlx-lm / mlx-vlm /
+> mlx-whisper / mlx-embeddings / mlx-audio / onnxruntime / transformers, verified by
+> `smlx run --verify`). The memory-safety guidance below still applies to any
+> integration test that loads a real model; the specific model footprints are kept
+> as indicative reference.
 
-- **llm** (4 files): SmolLM2-135M, SmolLM2-360M, MiniLM, all-MiniLM-L6-v2
-- **vlm** (5 files): SmolVLM-256M, SmolVLM-500M, nanoVLM, TinyLLaVA, Moondream2
-- **audio** (5 files): Whisper-tiny, Chatterbox, Orpheus, YAMNet, SileroVAD
-- **ocr** (2 files): TrOCR-small, Donut
+Tests were originally organized by model type:
+
+- **llm**: SmolLM2-135M, SmolLM2-360M, MiniLM, all-MiniLM-L6-v2
+- **vlm**: SmolVLM-256M, SmolVLM-500M, nanoVLM, TinyLLaVA, Moondream3
+- **audio**: Whisper-tiny (ASR), Kokoro (TTS), AST (audio-cls), Silero VAD
+- **ocr**: SmolVLM (via mlx-vlm)
 
 ## Unit Tests (Safe to Run in Parallel)
 

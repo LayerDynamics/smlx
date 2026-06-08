@@ -65,84 +65,6 @@ def test_cli_convert_no_quantize(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# #2 — server audio route must call transcribe(audio=...), not audio_path=...
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-async def test_server_transcribe_uses_audio_kwarg():
-    """`transcribe_audio` previously called transcribe(audio_path=...), leaving
-    the required `audio` argument unbound (TypeError). An autospec'd mock of the
-    real transcribe enforces its signature, so the bound call must include
-    `audio=` and never `audio_path=`."""
-    import smlx.server.routes.audio as audio_mod
-    from smlx.models.Whisper_tiny import transcribe as real_transcribe
-
-    spec = mock.create_autospec(
-        real_transcribe,
-        return_value={"text": "hello", "language": "en", "duration": 1.0, "segments": []},
-    )
-    with mock.patch("smlx.models.Whisper_tiny.transcribe", spec):
-        out = await audio_mod.transcribe_audio(
-            model=object(),
-            tokenizer=object(),
-            audio_bytes=b"RIFFxxxxWAVE",
-            language="en",
-            prompt=None,
-            temperature=0.0,
-        )
-
-    assert out["text"] == "hello"
-    kwargs = spec.call_args.kwargs
-    assert "audio" in kwargs and "audio_path" not in kwargs
-
-
-# ---------------------------------------------------------------------------
-# #3 — quant load presets must call quant fns with all required args
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("loader_mod", ["SmolLM2_135M", "SmolLM2_360M"])
-@pytest.mark.parametrize("preset", ["gptq", "awq", "dwq"])
-def test_quant_loader_presets_call_with_required_args(loader_mod, preset):
-    """`_apply_quantization` previously called awq/dwq/gptq quantizers without
-    their required `awq_config` / `calibration_data`. Autospec'd quantizers
-    enforce the real signatures, so a mis-bound call raises TypeError."""
-    import importlib
-
-    import smlx.quant as quant
-    import smlx.quant.utils as quant_utils
-    from smlx.quant.awq import awq_quantize as real_awq
-    from smlx.quant.dwq import dwq_quantize_simple as real_dwq
-    from smlx.quant.gptq import gptq_quantize as real_gptq
-
-    loader = importlib.import_module(f"smlx.models.{loader_mod}.loader")
-
-    sentinel_model = object()
-    specs = {
-        "gptq_quantize": mock.create_autospec(real_gptq, return_value=sentinel_model),
-        "awq_quantize": mock.create_autospec(real_awq, return_value=sentinel_model),
-        "dwq_quantize_simple": mock.create_autospec(real_dwq, return_value=sentinel_model),
-    }
-    with (
-        mock.patch.object(quant_utils, "load_calibration_data", return_value=object()),
-        mock.patch.object(quant, "gptq_quantize", specs["gptq_quantize"]),
-        mock.patch.object(quant, "awq_quantize", specs["awq_quantize"]),
-        mock.patch.object(quant, "dwq_quantize_simple", specs["dwq_quantize_simple"]),
-    ):
-        # tokenizer is unused once load_calibration_data is mocked
-        result = loader._apply_quantization(object(), object(), preset, None)
-
-    assert result is sentinel_model
-    if preset == "awq":
-        # awq_config is the required arg that was missing before the fix
-        called = specs["awq_quantize"].call_args
-        bound = called.kwargs
-        assert "awq_config" in bound and bound["awq_config"] is not None
-
-
-# ---------------------------------------------------------------------------
 # #4 — KVCacheManager factories must accept the enable_monitoring alias
 # ---------------------------------------------------------------------------
 
@@ -230,17 +152,39 @@ def test_chat_stream_forwards_verbose_without_typeerror():
 
 
 @pytest.mark.unit
-def test_tinyllava_language_model_class_name():
-    """cache.py's TYPE_CHECKING import aliased a non-existent `TinyLlama`; the
-    real class is TinyLlamaModel."""
-    from smlx.models.TinyLLaVA.language import TinyLlamaModel
-
-    assert TinyLlamaModel is not None
-
-
-@pytest.mark.unit
 def test_base_dataset_protocol_declares_process():
     """All concrete datasets implement process(); the Protocol now declares it."""
     from smlx.data.datasets import BaseDataset
 
     assert hasattr(BaseDataset, "process")
+
+
+# ---------------------------------------------------------------------------
+# #8 — public model registry exposes only verified aliases, no garbage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_public_registry_has_only_verified_aliases():
+    """After the bespoke packages were removed, the legacy load_model/MODEL_REGISTRY
+    public API exposes only the runner-verified aliases. The removed models report
+    not-implemented instead of resolving to a noise-producing object."""
+    from smlx.models import MODEL_REGISTRY, is_model_implemented
+
+    # Real entries are present and sourced from the runner.
+    assert is_model_implemented("smollm2-135m")
+    assert is_model_implemented("whisper-tiny")
+    assert is_model_implemented("minilm")
+
+    # Removed bespoke models are not implemented (fail-closed, not garbage).
+    for gone in (
+        "orpheus-150m",
+        "chatterbox",
+        "trocr-small",
+        "donut-base",
+        "yamnet",
+        "smolgencad",
+        "whisper_tiny",
+    ):
+        assert not is_model_implemented(gone), gone
+        assert gone not in MODEL_REGISTRY, gone

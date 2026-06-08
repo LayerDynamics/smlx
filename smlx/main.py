@@ -221,18 +221,18 @@ def transcribe(audio_file, model, language, output_format, output):
 
     Supports various output formats including SRT/VTT subtitles.
     """
-    from smlx.models.Whisper_tiny import load
-    from smlx.models.Whisper_tiny import transcribe as whisper_transcribe
+    import mlx_whisper
+
+    from smlx.models import mlx_backend
 
     click.echo(f"Loading {model}...")
-    whisper_model, tokenizer = load(model)
+    bm = mlx_backend.load(model)
     click.echo(" Model loaded\n")
 
     click.echo(f"Transcribing {audio_file}...")
-    result = whisper_transcribe(
-        audio=audio_file,
-        model=whisper_model,
-        tokenizer=tokenizer,
+    result = mlx_whisper.transcribe(
+        str(audio_file),
+        path_or_hf_repo=bm.repo,
         language=language,
     )
 

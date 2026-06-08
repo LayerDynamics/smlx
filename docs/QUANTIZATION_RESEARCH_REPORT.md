@@ -304,16 +304,10 @@ Time:        68.69s
 #### Phase 1: Model Loader Integration (HIGH)
 ```python
 # Desired API:
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
-model, tokenizer = load(
-    "mlx-community/SmolLM2-135M-Instruct",
-    quantize="4bit",  # or "8bit", "gptq", "awq", "auto"
-    quantization_config={
-        "bits": 4,
-        "group_size": 64,
-    }
-)
+bm = load("smollm2-135m", quantize="4bit")  # or "8bit"
+model, tokenizer = bm.model, bm.processor
 ```
 
 #### Phase 2: CLI Quantization (MEDIUM)

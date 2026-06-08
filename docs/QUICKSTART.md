@@ -40,16 +40,16 @@ pip install -e ".[all]"
 Create `hello_smlx.py`:
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load, generate
 
-# Load model (downloads automatically from HuggingFace)
+# Load a curated model by alias (downloads automatically from HuggingFace)
 print("Loading model...")
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")            # -> BackendModel (mlx-lm under the hood)
 
 # Generate text
 prompt = "The future of AI is"
 print(f"\nPrompt: {prompt}")
-print("Response:", generate(model, tokenizer, prompt, max_tokens=50))
+print("Response:", generate(m, prompt, max_tokens=50))
 ```
 
 Run it:
@@ -73,21 +73,25 @@ Response: The future of AI is exciting and full of possibilities...
 Create `chat_example.py`:
 
 ```python
-from smlx.models.SmolLM2_135M import load, chat
+from smlx.models import load
+from mlx_lm import stream_generate
+from mlx_lm.sample_utils import make_sampler
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")
 
-# Chat conversation
+# Build a chat prompt with the tokenizer's chat template
 messages = [
     {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Explain machine learning in one sentence."}
+    {"role": "user", "content": "Explain machine learning in one sentence."},
 ]
+prompt = m.processor.apply_chat_template(messages, add_generation_prompt=True)
 
-# Stream response
+# Stream the response token by token
 print("Assistant: ", end="", flush=True)
-for chunk in chat(model, tokenizer, messages, stream=True):
-    print(chunk, end="", flush=True)
+for resp in stream_generate(m.model, m.processor, prompt, max_tokens=80,
+                            sampler=make_sampler(temp=0.7)):
+    print(resp.text, end="", flush=True)
 print()  # New line
 ```
 
@@ -102,23 +106,23 @@ python chat_example.py
 Create `vision_example.py`:
 
 ```python
-from smlx.models.SmolVLM_256M import load, generate
+from smlx.models import load, generate
 from PIL import Image
 import requests
 from io import BytesIO
 
 # Load model
 print("Loading vision-language model...")
-model, processor = load("HuggingFaceTB/SmolVLM-256M-Instruct")
+m = load("smolvlm-256m")            # mlx-vlm under the hood
 
 # Download example image
 url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/tasks/car.jpg"
 response = requests.get(url)
 image = Image.open(BytesIO(response.content))
 
-# Ask question about image
+# Ask a question about the image (pass a path or a PIL image)
 prompt = "What color is the car in this image?"
-answer = generate(model, processor, prompt, image)
+answer = generate(m, prompt, image=image)
 print(f"\nQuestion: {prompt}")
 print(f"Answer: {answer}")
 ```
@@ -134,20 +138,13 @@ python vision_example.py
 Create `audio_example.py`:
 
 ```python
-from smlx.models.Whisper_tiny import load, transcribe
-import requests
+from smlx.models import runner
 
-# Load model
-print("Loading audio model...")
-model, processor = load()
-
-# Download example audio (or use your own)
-# For this example, we'll use a local file
+# Transcribe an audio file through the real Whisper backend (mlx-whisper).
+# runner.produce loads/caches the model and returns an honest RunResult.
 audio_path = "your_audio.wav"
-
-# Transcribe
-result = transcribe(model, processor, audio_path)
-print(f"\nTranscription: {result['text']}")
+result = runner.produce("whisper-tiny", audio=audio_path)
+print(f"\nTranscription: {result.text}")
 ```
 
 ### 5. Document OCR
@@ -155,28 +152,25 @@ print(f"\nTranscription: {result['text']}")
 Create `ocr_example.py`:
 
 ```python
-from smlx.models.TrOCR_small import load, recognize
+from smlx.models import runner
 from PIL import Image, ImageDraw, ImageFont
 
 # Create a simple text image
-def create_test_image(text="Hello SMLX!"):
+def create_test_image(text="Hello SMLX!", path="ocr_input.png"):
     img = Image.new('RGB', (400, 100), color='white')
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 32)
-    except:
+    except OSError:
         font = ImageFont.load_default()
     draw.text((10, 30), text, fill='black', font=font)
-    return img
+    img.save(path)
+    return path
 
-# Load model (printed text variant)
-print("Loading OCR model...")
-model, processor = load("printed")
-
-# Create and recognize text
+# OCR runs through SmolVLM via mlx-vlm
 test_text = "Hello SMLX!"
-image = create_test_image(test_text)
-recognized = recognize(model, processor, image)
+image_path = create_test_image(test_text)
+recognized = runner.produce("ocr", document=image_path).text
 
 print(f"\nOriginal: {test_text}")
 print(f"Recognized: {recognized}")
@@ -193,18 +187,15 @@ python ocr_example.py
 ### Pattern 1: Custom Generation Parameters
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load, generate
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")
 
 output = generate(
-    model,
-    tokenizer,
-    prompt="Write a haiku about coding:",
+    m,
+    "Write a haiku about coding:",
     max_tokens=100,
     temperature=0.8,      # Higher = more creative
-    top_p=0.95,           # Nucleus sampling
-    repetition_penalty=1.1  # Reduce repetition
 )
 print(output)
 ```
@@ -212,9 +203,9 @@ print(output)
 ### Pattern 2: Batch Processing
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load, generate
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")
 
 prompts = [
     "What is Python?",
@@ -223,7 +214,7 @@ prompts = [
 ]
 
 for prompt in prompts:
-    response = generate(model, tokenizer, prompt, max_tokens=50)
+    response = generate(m, prompt, max_tokens=50)
     print(f"Q: {prompt}")
     print(f"A: {response}\n")
 ```
@@ -231,29 +222,26 @@ for prompt in prompts:
 ### Pattern 3: Model Quantization
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
-from smlx.quant import quantize_model
+from smlx.models import load, generate
 
-# Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+# Quantize at load time (reduces memory by ~75%); the correct upstream impl
+# loads first, then SMLX applies 4-bit quantization on top.
+print("Loading model in 4-bit...")
+m = load("smollm2-135m", quantize="4bit")
+assert m.quantized
 
-# Quantize to 4-bit (reduces memory by ~75%)
-print("Quantizing model to 4-bit...")
-quantized_model = quantize_model(model, bits=4, group_size=64)
-
-# Use quantized model (same API)
-output = generate(quantized_model, tokenizer, "Hello", max_tokens=50)
+output = generate(m, "Hello", max_tokens=50)
 print(output)
 ```
 
 ### Pattern 4: Error Handling
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load, generate
 
 try:
-    model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-    output = generate(model, tokenizer, "Hello", max_tokens=50)
+    m = load("smollm2-135m")
+    output = generate(m, "Hello", max_tokens=50)
     print(output)
 except Exception as e:
     print(f"Error: {e}")
@@ -364,18 +352,18 @@ Create `agent_example.py`:
 ```python
 from smlx.agents import ReActAgent
 from smlx.agents.tools import ToolRegistry, calculator, get_time
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")
 
 # Create tool registry
 registry = ToolRegistry()
 registry.register(calculator)
 registry.register(get_time)
 
-# Create agent
-agent = ReActAgent(model, tokenizer, registry, max_iterations=5)
+# Create agent (agents take the model + tokenizer pair)
+agent = ReActAgent(m.model, m.processor, registry, max_iterations=5)
 
 # Run task
 task = "What is 25 * 17, and what time is it?"
@@ -396,13 +384,13 @@ python agent_example.py
 
 ```python
 from smlx.agents import CoTAgent
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+m = load("smollm2-135m")
 
 # Create agent
-agent = CoTAgent(model, tokenizer, zero_shot=True)
+agent = CoTAgent(m.model, m.processor, zero_shot=True)
 
 # Solve problem with step-by-step reasoning
 task = "If a train travels 60 mph for 2.5 hours, how far does it go?"
@@ -415,31 +403,24 @@ print(f"\nReasoning:\n{response.reasoning}")
 
 ## Exploring Examples
 
-The `examples/` directory contains working examples for all features:
+Every model runs through one real entrypoint — `smlx run` (verified by the gate):
 
 ```bash
-# Language models
-python examples/models/smollm2_135m/smollm2_135m_example.py
+smlx run --list                                    # every runnable model
+smlx run smollm2-135m --text "What is MLX?"        # language
+smlx run smolvlm-256m --image photo.jpg --text "What is this?"   # VLM
+smlx run whisper-tiny --audio clip.wav             # audio transcription
+smlx run ocr --document scan.png                   # OCR (SmolVLM via mlx-vlm)
+smlx run --verify                                  # correctness gate, all models
+```
 
-# Vision-language models
-python examples/models/smolvlm_256m/smolvlm_example.py
+Standalone scripts under `examples/` cover the non-model subsystems:
 
-# Audio models
-python examples/whisper_tiny/basic_transcription.py
-
-# OCR
-python examples/models/trocr_small/trocr_example.py
-
-# Quantization
-python examples/quant/gptq_example.py
-python examples/quant/lora_example.py
-
-# Agents
-python examples/agents/react_agent_example.py
-python examples/agents/cot_agent_example.py
-
-# Evaluation
-python examples/eval/mmmu_eval.py
+```bash
+python examples/quant/fp4_comparison.py            # quantization
+python examples/gym/dqn_cartpole.py                # RL / gym
+python examples/server/openai_compatible.py        # OpenAI-compatible server
+python examples/eval/vlm_eval_example.py           # evaluation
 ```
 
 ## Running Tests
@@ -480,10 +461,9 @@ python -m smlx.tools.download_data --model mlx-community/SmolLM2-135M-Instruct -
 
 ```python
 # Use quantization to reduce memory usage
-from smlx.quant import quantize_model
+from smlx.models import load
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-model = quantize_model(model, bits=4, group_size=64)  # 75% memory reduction
+m = load("smollm2-135m", quantize="4bit")  # 75% memory reduction at load time
 ```
 
 ### Issue: Slow inference
@@ -523,22 +503,22 @@ pip install -e ".[dev,evals,server]"
 
 ### Explore Advanced Features
 
-1. **Fine-tuning with LoRA**
+1. **Quantization formats** (`smlx.quant`: 4/8-bit, GPTQ, AWQ, DWQ, LoRA/DoRA)
 
    ```bash
-   python examples/quant/lora_example.py
+   python examples/quant/fp4_comparison.py
    ```
 
-2. **Multi-agent collaboration**
+2. **RL / gym environments**
 
    ```bash
-   python examples/agents/multi_agent_example.py
+   python examples/gym/dqn_cartpole.py
    ```
 
-3. **Custom evaluation benchmarks**
+3. **Evaluation benchmarks**
 
    ```bash
-   python examples/eval/custom_eval.py
+   python examples/eval/vlm_eval_example.py
    ```
 
 4. **Production deployment**
@@ -559,55 +539,46 @@ pip install -e ".[dev,evals,server]"
 ### Model Loading
 
 ```python
-# Language models
-from smlx.models.SmolLM2_135M import load
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+# One unified loader for every curated model — pass a short alias.
+from smlx.models import load
 
-# Vision-language models
-from smlx.models.SmolVLM_256M import load
-model, processor = load("HuggingFaceTB/SmolVLM-256M-Instruct")
+lm   = load("smollm2-135m")     # language (mlx-lm)
+vlm  = load("smolvlm-256m")     # vision-language (mlx-vlm)
+emb  = load("minilm")           # embeddings (mlx-embeddings)
 
-# Audio models
-from smlx.models.Whisper_tiny import load
-model, processor = load()
-
-# Document models
-from smlx.models.TrOCR_small import load
-model, processor = load("printed")  # or "handwritten"
-
-# Embedding models
-from smlx.models.MiniLM import load
-model, tokenizer = load()
+# load() returns a BackendModel: .model, .processor, .backend, .repo, .modality
+# ASR / OCR / TTS / VAD / audio-cls / CAD run through the unified runner:
+from smlx.models import runner
+runner.produce("whisper-tiny", audio="clip.wav")     # ASR (mlx-whisper)
+runner.produce("ocr", document="scan.png")           # OCR (SmolVLM via mlx-vlm)
 ```
 
 ### Generation Functions
 
 ```python
-# Text generation
-from smlx.models.SmolLM2_135M import generate, chat, stream_generate
+from smlx.models import load, generate
 
-# Basic generation
-output = generate(model, tokenizer, prompt, max_tokens=100)
+m = load("smollm2-135m")
 
-# Streaming
-for chunk in stream_generate(model, tokenizer, prompt):
-    print(chunk, end="", flush=True)
+# Basic generation (LM or VLM via the same call; pass image=... for VLMs)
+output = generate(m, "Explain MLX in one sentence.", max_tokens=100)
 
-# Chat
-messages = [{"role": "user", "content": "Hello"}]
-response = chat(model, tokenizer, messages)
+# Streaming uses mlx-lm directly against m.model / m.processor
+from mlx_lm import stream_generate
+from mlx_lm.sample_utils import make_sampler
+for resp in stream_generate(m.model, m.processor, "Hello", max_tokens=50,
+                            sampler=make_sampler(temp=0.7)):
+    print(resp.text, end="", flush=True)
 ```
 
 ### Quantization
 
 ```python
-from smlx.quant import quantize_model
+from smlx.models import load, generate
 
-# 4-bit quantization (75% memory reduction)
-model = quantize_model(model, bits=4, group_size=64)
-
-# 8-bit quantization (50% memory reduction)
-model = quantize_model(model, bits=8, group_size=128)
+# Quantize at load time (the upstream impl loads first, SMLX quantizes on top)
+m = load("smollm2-135m", quantize="4bit")   # or "8bit"
+output = generate(m, "Hello", max_tokens=50)
 ```
 
 ### Agent Tools
@@ -615,14 +586,17 @@ model = quantize_model(model, bits=8, group_size=128)
 ```python
 from smlx.agents import ReActAgent, CoTAgent, SelfConsistencyCoTAgent
 from smlx.agents.tools import ToolRegistry, calculator, get_time, wikipedia_search
+from smlx.models import load
+
+m = load("smollm2-135m")
 
 # Create registry
 registry = ToolRegistry()
 registry.register(calculator)
 registry.register(get_time)
 
-# Create agent
-agent = ReActAgent(model, tokenizer, registry)
+# Create agent (agents take the model + tokenizer pair)
+agent = ReActAgent(m.model, m.processor, registry)
 response = agent.run("What is 15 * 23?")
 ```
 

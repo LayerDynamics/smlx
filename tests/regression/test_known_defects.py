@@ -59,20 +59,6 @@ def test_gym_router_registered_in_app():
 
 
 # ---------------------------------------------------------------------------
-# 3 & 4. TTS honesty: models expose a weights_loaded flag (default False)
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_tts_synthesize_is_honest_about_uninitialized_weights():
-    orpheus = (SMLX / "models" / "Orpheus_150M" / "synthesize.py").read_text()
-    assert 'getattr(model, "weights_loaded"' in orpheus
-    assert "UNINITIALIZED" in orpheus
-
-    chatter = (SMLX / "models" / "Chatterbox" / "synthesize.py").read_text()
-    assert 'getattr(model, "weights_loaded"' in chatter
-    assert "UNINITIALIZED" in chatter
-
-
-# ---------------------------------------------------------------------------
 # 5. convert2mlx really quantizes (not a no-op)
 # ---------------------------------------------------------------------------
 def _fake_llm_weights():
@@ -236,66 +222,6 @@ def test_ggml_quantizers_disclose_no_runtime_savings():
     for fname in ("q8_0.py", "q4_1.py", "q4_k_m.py", "q6_k.py"):
         src = (SMLX / "quant" / fname).read_text().lower()
         assert "no runtime memory savings" in src or "not reduce runtime memory" in src, fname
-
-
-# ---------------------------------------------------------------------------
-# 12. TrOCR tokenizer fails loudly instead of emitting char-level garbage
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_trocr_tokenizer_fails_loudly_without_backend():
-    from smlx.models.TrOCR_small.processor import TrOCRTokenizer
-
-    tok = TrOCRTokenizer(model_name=None)
-    with pytest.raises(RuntimeError):
-        tok.encode("hello")
-    with pytest.raises(RuntimeError):
-        tok.decode([1, 2, 3])
-
-
-# ---------------------------------------------------------------------------
-# 13. SmolVLM-500M docstring reports the right size
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_smolvlm_500m_docstring_not_copy_pasted():
-    src = (SMLX / "models" / "SmolVLM_500M_Instruct" / "model.py").read_text()
-    assert "~500M" in src
-    assert "256M" not in src.split('"""', 2)[1]  # the module docstring
-
-
-# ---------------------------------------------------------------------------
-# 14. Moondream text-based detection no longer fabricates 0.9 confidence
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_moondream_no_fabricated_confidence():
-    src = (SMLX / "models" / "Moondream2" / "generate.py").read_text()
-    assert "x1, y1, x2, y2, 0.9" not in src
-    assert "x1, y1, x2, y2, None" in src
-
-
-# ---------------------------------------------------------------------------
-# 15. Donut docstrings no longer claim implemented code is a placeholder
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_donut_no_stale_placeholder_claims():
-    model_src = (SMLX / "models" / "Donut_base" / "model.py").read_text()
-    init_src = (SMLX / "models" / "Donut_base" / "__init__.py").read_text()
-    assert "replaced in Phase 2" not in model_src
-    assert "placeholder components" not in model_src
-    assert "placeholder architectures" not in init_src
-
-
-# ---------------------------------------------------------------------------
-# 16. SileroVAD ONNX path fails loudly (or converts) instead of random weights
-# ---------------------------------------------------------------------------
-@pytest.mark.unit
-def test_silerovad_onnx_path_does_not_silently_use_random_weights():
-    from smlx.models.SileroVAD.loader import _convert_onnx_weights
-
-    # onnx is an optional dep; without it the converter must raise clearly.
-    with pytest.raises(RuntimeError):
-        _convert_onnx_weights("/tmp/does-not-exist.onnx")
-    src = (SMLX / "models" / "SileroVAD" / "loader.py").read_text()
-    assert "Conversion to MLX not yet implemented" not in src
 
 
 # ---------------------------------------------------------------------------

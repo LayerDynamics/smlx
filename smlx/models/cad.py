@@ -1,15 +1,11 @@
 """Deterministic text -> CAD generation.
 
-The smolGenCad neural model has no public trained checkpoint (it emits random
-output). This module is a **real, correct** alternative: it parses a natural-
-language CAD spec into a valid CadQuery program and solid for the common
-parametric primitives. It is rule-based, not ML — but the output is genuine
-correct CAD (verified by executing the emitted CadQuery), not a placeholder.
+Parses a natural-language CAD spec into a CadQuery program and solid for the
+common parametric primitives (cylinder, box/cube, sphere, cone), with dimensions
+in mm/cm/m/in and an optional fillet. The emitted CadQuery is executed to return
+the solid's bounding box.
 
-Supported primitives: cylinder, box/cube, sphere, cone — with dimensions in
-mm/cm/m/in and an optional fillet.
-
-    >>> from smlx.models.smolGenCad.text_to_cad import generate
+    >>> from smlx.models.cad import generate
     >>> r = generate("a cylinder with radius 5mm and height 10mm")
     >>> r["primitive"], r["params"], r["bbox"]
     ('cylinder', {'radius': 5.0, 'height': 10.0}, (10.0, 10.0, 10.0))

@@ -140,11 +140,12 @@ The implementation maintains backward compatibility with existing code:
 
 ### Basic Quantization
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import quantize_model_q4_0, get_actual_model_size
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Get original size
 original_size = get_actual_model_size(model)

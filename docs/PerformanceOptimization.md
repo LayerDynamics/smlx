@@ -49,7 +49,7 @@ with timer("Generation"):
 from smlx.utils.profiling import profile_memory
 
 with profile_memory("Model Loading"):
-    model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+    model = load("smollm2-135m").model
 
 # Output: Model Loading: 512.3MB
 ```
@@ -257,7 +257,7 @@ Reduce memory by 75% with 4-bit quantization:
 from smlx.quant import quantize_model
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+model = load("smollm2-135m").model
 
 # Quantize to 4-bit
 model_4bit = quantize_model(model, bits=4)
@@ -307,10 +307,10 @@ Start with smallest model that meets quality requirements:
 
 ```python
 # For simple chat: SmolLM2-135M (~500MB)
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+model = load("smollm2-135m").model
 
 # For better quality: SmolLM2-360M (~1.5GB)
-model, tokenizer = load("mlx-community/SmolLM2-360M-Instruct")
+model = load("smollm2-360m").model
 ```
 
 ### 2. Use Quantization by Default
@@ -389,7 +389,7 @@ def check_memory():
 
 # Check before/after operations
 check_memory()
-model, tokenizer = load("mlx-community/SmolLM2-360M-Instruct")
+model = load("smollm2-360m").model
 check_memory()
 ```
 

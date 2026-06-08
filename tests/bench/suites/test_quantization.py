@@ -185,9 +185,10 @@ class TestBenchmarkQuantizedModel:
         so it needs an actual model — a mock cannot drive it. Gated by
         requires_model.
         """
-        from smlx.models.SmolLM2_135M import load
+        from smlx.models import mlx_backend
 
-        model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+        bm = mlx_backend.load("mlx-community/SmolLM2-135M-Instruct")
+        model, tokenizer = bm.model, bm.processor
 
         result = benchmark_quantized_model(
             model=model,
