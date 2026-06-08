@@ -104,15 +104,14 @@ async def create_transcription(
             raise ValueError(f"Model {model} is not a Whisper model")
 
         # Load Whisper model
-        whisper_model, whisper_tokenizer = await manager.load_model(model, model_type="whisper")
+        bm = await manager.load_model(model, model_type="whisper")
 
         # Read audio file
         audio_bytes = await file.read()
 
         # Transcribe audio
         transcription = await transcribe_audio(
-            model=whisper_model,
-            tokenizer=whisper_tokenizer,
+            bm=bm,
             audio_bytes=audio_bytes,
             language=language,
             prompt=prompt,
@@ -145,19 +144,17 @@ async def create_transcription(
 
 
 async def transcribe_audio(
-    model,
-    tokenizer,
+    bm,
     audio_bytes: bytes,
     language: str | None,
     prompt: str | None,
     temperature: float,
 ) -> dict:
     """
-    Transcribe audio using Whisper model.
+    Transcribe audio through mlx-whisper.
 
     Args:
-        model: Loaded Whisper model
-        tokenizer: Whisper tokenizer
+        bm: Loaded ASR BackendModel (carries the Whisper repo)
         audio_bytes: Audio file bytes
         language: Optional language code
         prompt: Optional transcription prompt
@@ -166,15 +163,11 @@ async def transcribe_audio(
     Returns:
         Dictionary with transcription results
     """
-    # Import Whisper transcribe function
-    try:
-        from smlx.models.Whisper_tiny import transcribe
-    except ImportError:
-        raise ValueError("Whisper model not available")
-
-    # Save audio bytes to temporary file (Whisper expects file path)
+    # Save audio bytes to temporary file (Whisper expects a file path)
     import os
     import tempfile
+
+    import mlx_whisper
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         tmp_file.write(audio_bytes)
@@ -185,9 +178,9 @@ async def transcribe_audio(
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: transcribe(
-                audio=tmp_path,
-                model=model,
+            lambda: mlx_whisper.transcribe(
+                tmp_path,
+                path_or_hf_repo=bm.repo,
                 language=language,
                 temperature=temperature,
                 initial_prompt=prompt,
