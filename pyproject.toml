@@ -42,6 +42,8 @@ dependencies = [
     "safetensors>=0.4.0",  # weight loading/conversion is used across core model loaders
     "mlx-lm>=0.31.0",  # correct upstream MLX language-model implementations (smlx.models.mlx_backend)
     "mlx-vlm>=0.6.0",  # correct upstream MLX vision-language implementations (smlx.models.mlx_backend)
+    "mlx-whisper>=0.4.0",  # real ASR (`smlx run whisper-tiny`) — maintained upstream Whisper
+    "mlx-embeddings>=0.0.3",  # real sentence embeddings (`smlx run minilm`)
     "num2words>=0.5.0",  # required by some mlx-vlm processors (e.g. SmolVLM) for number normalization
 ]
 
@@ -121,6 +123,11 @@ audio = [
     # (so no torch is pulled), with a Hub download as fallback.
     "onnxruntime>=1.16.0",
     "silero-vad>=5.1",
+    # Real audio-event classification (`smlx run ast`) uses transformers' AST;
+    # its feature extractor needs torchaudio matching the installed torch.
+    "torchaudio>=2.9.0",
+    # Real text->CAD (`smlx run cad`) emits CadQuery, verified by executing it.
+    "cadquery>=2.4",
 ]
 
 # Tools dependencies (for model conversion and downloading)

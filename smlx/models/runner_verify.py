@@ -167,7 +167,10 @@ def _check_embeddings(entry, fx) -> tuple[bool, str]:
         entry, text=["a cat sleeps on the mat", "a kitten naps on the rug", "stocks fell"]
     )
     v = np.asarray(out.data)
-    cos = lambda a, b: float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+    def cos(a, b):
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
     para, unrel = cos(v[0], v[1]), cos(v[0], v[2])
     return para > unrel + 0.1, f"paraphrase {para:.2f} > unrelated {unrel:.2f}"
 

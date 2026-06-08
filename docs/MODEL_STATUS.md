@@ -12,40 +12,52 @@ smlx models verify smolvlm-256m   # one model
 smlx models list              # the curated zoo
 ```
 
-## Run any model (`smlx run`)
+## Run any model (`smlx run`) — 100% real, gate-verified
 
-The curated zoo above is the *verified, trained-quality* subset. To produce real
-output from **every implemented model** (all 17 packages — including the legacy
-TTS/OCR/VAD/audio-classification/CAD ones), use `smlx run`. Each model runs its own
-real inference pipeline; audio/CAD/json artifacts are written to `data/output/`.
+**Every** entry in `smlx run --list` produces real, correct output. There are **no
+bespoke hand-written forward passes** — each entry routes to a maintained upstream
+implementation or a real deterministic one, and a **fail-closed correctness gate**
+(`smlx run --verify`) proves it:
 
 ```bash
 smlx run --list                                   # every runnable model + what it needs
-smlx run smollm2-135m --text "What is MLX?"
-smlx run orpheus-150m --text "Hello world"        # -> data/output/orpheus-150m.wav
-smlx run trocr-small --document scan.png
+smlx run --verify                                 # real per-modality correctness gate (non-zero on any fail)
+smlx run smollm2-135m --text "What is the capital of France?"   # -> Paris
+smlx run ocr --document scan.png                  # real OCR (SmolVLM via mlx-vlm)
+smlx run kokoro --text "Hello world"              # real TTS -> data/output/kokoro.wav
+smlx run cad  --text "cylinder radius 5mm height 10mm"          # real CadQuery
 smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
 ```
 
-Inputs are **user-provided** (per-modality flags `--text/--image/--audio/--document`);
-`--all` runs every model whose required inputs you supplied and **SKIPs** the rest.
+### Verified entries (`smlx run --verify` → 14/14)
 
-### Honest weight status
+| Entry | Modality | Real backing | Correctness check |
+|-------|----------|--------------|-------------------|
+| `smollm2-135m/360m` | language | mlx-lm | capital-of-France → "Paris" |
+| `smolvlm-256m/500m`, `nanovlm`, `tinyllava` | vision-language | mlx-vlm | colour discrimination (red→red, green→green) |
+| `whisper-tiny` | ASR | mlx-whisper | transcribes real speech (keyword match) |
+| `kokoro` | TTS | mlx-audio (Kokoro-82M) | synth → Whisper round-trips the text |
+| `ocr` | OCR | mlx-vlm (SmolVLM-500M) | rendered text → exact match |
+| `silero-vad` | VAD | onnxruntime (Silero v5) | real speech → speech segment |
+| `ast` | audio-cls | transformers (AST AudioSet) | speech → "Speech" |
+| `minilm`, `all-minilm-l6-v2` | embeddings | mlx-embeddings | paraphrase cos > unrelated cos |
+| `cad` | CAD | deterministic parser → CadQuery | spec → solid with expected bbox |
 
-Every run reports a runtime-derived status — `ok` means *the pipeline produced
-output*, the status says whether that output is **trustworthy**:
+The gate generates its speech fixture with the real Kokoro TTS, so ASR/VAD/audio-cls
+are checked against genuine speech.
 
-| Status | Meaning |
-|--------|---------|
-| `TRAINED` | Real public weights → meaningful output (SmolLM2, SmolVLM, Whisper, MiniLM, Moondream2, TinyLLaVA, nanoVLM, YAMNet). |
-| `TRAINED-WEIGHTS` | Real weights but a known defect (TrOCR: decoder MLP params absent from the checkpoint → repetitive). |
-| `PIPELINE-ONLY` | Random/partial weights: output happens and is well-formed, but **not** meaningful (Orpheus, Chatterbox without local weights, smolGenCad, SileroVAD without converted weights). |
-| `SKIPPED` | A required input was not supplied (not an error). |
-| `ERROR` | The pipeline raised (the real exception is shown). |
+### Quarantined (NOT wired into `smlx run` — would produce garbage)
 
-Status comes from a real `model.weights_loaded` signal where the loader exposes one,
-never a hardcoded guess. `smlx run` exits non-zero only on `ERROR` — `SKIPPED` and
-honest `PIPELINE-ONLY` are not failures.
+The bespoke SMLX implementations mishandled real weights (or had none); they are
+**excluded** from the runner and the verified list rather than faked:
+
+| Package | Why quarantined | Real replacement |
+|---------|-----------------|------------------|
+| `Orpheus_150M`, `Chatterbox` (TTS) | no public checkpoint → noise | `kokoro` |
+| `TrOCR_small`, `Donut_base` (OCR) | architecture diverges from real TrOCR/BART → gibberish | `ocr` |
+| `YAMNet` (audio-cls) | log-mel front-end didn't match weights → wrong labels | `ast` |
+| `smolGenCad` (CAD) | no trained text-to-CAD checkpoint → random | `cad` (deterministic) |
+| `moondream2` entry | real Moondream2 unsupported by mlx-vlm; Qwen2-VL-4bit substitute is degenerate on solid colours (fails the gate) | covered by the 4 real VLMs |
 
 ## Architecture
 
