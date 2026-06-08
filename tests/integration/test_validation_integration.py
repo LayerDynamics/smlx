@@ -23,14 +23,14 @@ class TestValidationIntegration:
     @pytest.fixture
     def smollm2_model(self):
         """Load SmolLM2 model for testing."""
-        from smlx.models.SmolLM2_135M import load
+        from smlx.models import mlx_backend
 
-        model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-        return model, tokenizer
+        bm = mlx_backend.load("mlx-community/SmolLM2-135M-Instruct")
+        return bm.model, bm.processor
 
     def test_basic_validation(self, smollm2_model):
         """Test basic validation works with generation."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 
@@ -61,7 +61,7 @@ class TestValidationIntegration:
 
     def test_min_tokens_enforcement(self, smollm2_model):
         """Test that min_tokens prevents early stopping."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 
@@ -80,7 +80,7 @@ class TestValidationIntegration:
 
     def test_validation_retry_on_failure(self, smollm2_model):
         """Test retry logic when validation fails."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 
@@ -135,7 +135,7 @@ class TestValidationIntegration:
 
     def test_quality_metrics_integration(self, smollm2_model):
         """Test quality metrics work with generated output."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
         from smlx.utils import assess_quality
 
         model, tokenizer = smollm2_model
@@ -165,7 +165,7 @@ class TestValidationIntegration:
 
     def test_validation_with_different_temperatures(self, smollm2_model):
         """Test validation works across temperature range."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 
@@ -186,7 +186,7 @@ class TestValidationIntegration:
 
     def test_empty_output_prevention(self, smollm2_model):
         """Test that min_tokens prevents empty outputs."""
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 
@@ -208,7 +208,7 @@ class TestValidationIntegration:
         """Test that validation doesn't add excessive overhead."""
         import time
 
-        from smlx.models.SmolLM2_135M import generate
+        from smlx.utils.generation import generate
 
         model, tokenizer = smollm2_model
 

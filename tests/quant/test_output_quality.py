@@ -47,8 +47,12 @@ class TestQuantizationOutputQuality:
     @pytest.mark.integration
     def test_4bit_quality_vs_full_precision(self, test_prompts, quality_thresholds):
         """Test that 4-bit quantization maintains acceptable quality."""
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import quantize_model
         from smlx.utils.quality_metrics import assess_quality, compare_quality
 
@@ -102,8 +106,12 @@ class TestQuantizationOutputQuality:
         gptq_quantize: previously the attention o_proj Hessians were singular,
         producing NaN weights and a model that emitted only EOS.
         """
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import gptq_quantize, load_calibration_data
         from smlx.utils.validation import validate_text_output
 
@@ -153,8 +161,12 @@ class TestQuantizationOutputQuality:
     @pytest.mark.timeout(600)
     def test_awq_perplexity_degradation(self, test_prompts, quality_thresholds):
         """Test AWQ quantization perplexity degradation is within threshold."""
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import awq_quantize, llama_awq, load_calibration_data
         from smlx.utils.quality_metrics import calculate_perplexity
 
@@ -297,8 +309,12 @@ class TestQuantizationOutputQuality:
     @pytest.mark.integration
     def test_quantization_consistency(self, test_prompts):
         """Test that quantized model produces consistent outputs (reproducibility)."""
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import quantize_model
 
         # Load and quantize
@@ -320,8 +336,12 @@ class TestQuantizationOutputQuality:
     @pytest.mark.integration
     def test_quantization_preserves_special_tokens(self):
         """Test that quantization doesn't break special token handling."""
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import quantize_model
 
         # Load and quantize
@@ -344,8 +364,12 @@ class TestQuantizationPerformanceVsQuality:
     @pytest.mark.slow
     def test_bits_vs_quality_tradeoff(self):
         """Test how different bit widths affect quality."""
-        from smlx.models.SmolLM2_135M import load
-        from smlx.models.SmolLM2_135M.generate import generate
+        from smlx.models import mlx_backend
+
+        def load(repo):
+            bm = mlx_backend.load(repo)
+            return bm.model, bm.processor
+        from smlx.utils.generation import generate
         from smlx.quant import quantize_model
         from smlx.utils.quality_metrics import assess_quality
 

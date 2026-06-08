@@ -379,10 +379,11 @@ class TestIntegrationWithSmolLM:
     @pytest.mark.skip(reason="Requires downloading model - run manually")
     def test_lora_on_smollm2(self):
         """Test applying LoRA to SmolLM2-135M model."""
-        from smlx.models.SmolLM2_135M import load
+        from smlx.models import mlx_backend
 
         # Load model
-        model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+        bm = mlx_backend.load("mlx-community/SmolLM2-135M-Instruct")
+        model, tokenizer = bm.model, bm.processor
 
         # Apply LoRA
         lora_model = apply_lora(model, rank=16, alpha=32.0)
