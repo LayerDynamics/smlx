@@ -5,47 +5,23 @@ Each :class:`~smlx.models.runner.RunEntry` here wires a model's *own real*
 loader/runner closures so ``smlx run --list`` (and importing this module) does not
 pull every model's heavy dependencies.
 
-Weight status is derived at runtime from a real ``model.weights_loaded`` signal
-where the loader exposes one (Orpheus, Chatterbox, Donut, SileroVAD, smolGenCad);
-models that load a real public checkpoint report ``TRAINED``; TrOCR reports a
-``TRAINED-WEIGHTS`` gap (decoder MLP params absent from the checkpoint, verified —
-output is repetitive). Nothing is hardcoded to claim quality it doesn't have.
+Every registered entry routes to a maintained upstream implementation (mlx-lm,
+mlx-vlm, mlx-whisper, mlx-embeddings, mlx-audio, onnxruntime, transformers) or a
+real deterministic implementation — there are **no bespoke hand-written forward
+passes** in any path, so every entry reports ``TRAINED``. The bespoke SMLX impls
+that mishandled real weights (Orpheus/Chatterbox TTS, TrOCR/Donut OCR, YAMNet
+audio-cls, the untrained smolGenCad) are **quarantined** — not wired here — and
+documented in ``docs/MODEL_STATUS.md``.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from .runner import RunEntry, RunOutput, WeightStatus, register
 
-
-def _model_of(loaded: Any) -> Any:
-    """The nn.Module from a load() result that may be a tuple (model, ...)."""
-    if isinstance(loaded, tuple):
-        return loaded[0]
-    return loaded
-
-
-def _status(
-    loaded: Any,
-    *,
-    gap: bool = False,
-    gap_reason: str = "",
-    untrained_reason: str = "random weights: output is structural, not trained",
-) -> tuple:
-    """Map the model's real weights_loaded signal to (WeightStatus, reason)."""
-    wl = getattr(_model_of(loaded), "weights_loaded", None)
-    if wl is False:
-        return WeightStatus.PIPELINE_ONLY, untrained_reason
-    if gap:
-        return WeightStatus.TRAINED_GAP, gap_reason
-    return WeightStatus.TRAINED, ""
-
-
-def _open_image(path: str):
-    from PIL import Image
-
-    return Image.open(path).convert("RGB")
+# All runner entries now route to real upstream impls (mlx-lm/mlx-vlm/mlx-whisper/
+# mlx-embeddings/mlx-audio/onnxruntime/transformers) or a real deterministic
+# implementation, so every entry reports WeightStatus.TRAINED. The old
+# weights_loaded-signal helper is gone with the bespoke adapters it served.
 
 
 # --------------------------------------------------------------------------- #
@@ -85,15 +61,6 @@ for _key, _repo in _LM_BACKEND.items():
 # --------------------------------------------------------------------------- #
 # Vision-language models                                                       #
 # --------------------------------------------------------------------------- #
-
-
-def _vlm_loader(pkg: str):
-    def _load():
-        import importlib
-
-        return importlib.import_module(f"smlx.models.{pkg}").load()
-
-    return _load
 
 
 # Every VLM entry runs through the real mlx-vlm backend (correct upstream
@@ -178,39 +145,9 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _make_tts_runner(pkg: str, sample_rate: int, untrained_reason: str):
-    def _run(loaded, *, text, image=None, audio=None, document=None, **opts):
-        import importlib
-
-        syn = importlib.import_module(f"smlx.models.{pkg}").synthesize
-        model, processor = loaded
-        waveform = syn(model, processor, text, sample_rate=sample_rate)
-        status, reason = _status(loaded, untrained_reason=untrained_reason)
-        return RunOutput(kind="audio", status=status, reason=reason, audio=(waveform, sample_rate))
-
-    return _run
-
-
-register(
-    RunEntry(
-        "orpheus-150m",
-        "tts",
-        ("text",),
-        _vlm_loader("Orpheus_150M"),
-        _make_tts_runner("Orpheus_150M", 24000, "random weights: noise, not speech"),
-        note="Orpheus text-to-speech",
-    )
-)
-register(
-    RunEntry(
-        "chatterbox",
-        "tts",
-        ("text",),
-        _vlm_loader("Chatterbox"),
-        _make_tts_runner("Chatterbox", 24000, "random weights: noise, not speech"),
-        note="Chatterbox text-to-speech",
-    )
-)
+# QUARANTINED: the bespoke Orpheus_150M / Chatterbox TTS impls have no public
+# checkpoint and emit noise. They are NOT wired into the runner — `kokoro` is the
+# real TTS. See docs/MODEL_STATUS.md "Quarantined".
 
 
 # Real, trained-weights TTS via mlx-audio's Kokoro-82M. Unlike the SMLX
@@ -355,56 +292,11 @@ register(
 )
 
 
-def _trocr_loader():
-    from smlx.models.TrOCR_small import load
-
-    return load("printed")
-
-
-def _trocr_runner(loaded, *, text=None, image=None, audio=None, document, **opts):
-    from smlx.models.TrOCR_small import recognize
-
-    model, processor = loaded
-    out = recognize(model, processor, document)
-    # TrOCR loads real microsoft/trocr-small-printed weights but the decoder MLP
-    # params are absent from the checkpoint (verified ~75 missing) -> repetitive.
-    status, reason = _status(
-        loaded, gap=True, gap_reason="decoder MLP params absent from checkpoint -> repetitive"
-    )
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-register(
-    RunEntry(
-        "trocr-small",
-        "ocr",
-        ("document",),
-        _trocr_loader,
-        _trocr_runner,
-        note="TrOCR printed-text OCR",
-    )
-)
-
-
-def _donut_runner(loaded, *, text=None, image=None, audio=None, document, **opts):
-    from smlx.models.Donut_base import generate
-
-    model, processor = loaded
-    out = generate(model, processor, document, prompt=opts.get("prompt", ""))
-    status, reason = _status(loaded)
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-register(
-    RunEntry(
-        "donut-base",
-        "ocr",
-        ("document",),
-        _vlm_loader("Donut_base"),
-        _donut_runner,
-        note="Donut document understanding",
-    )
-)
+# QUARANTINED: the bespoke TrOCR_small / Donut_base impls diverge architecturally
+# from real TrOCR/BART (extra layers with no checkpoint source, residual encoder
+# bugs) and produce gibberish even with real weights. They are NOT wired into the
+# runner — the `ocr` entry above (SmolVLM via mlx-vlm) is the real OCR path.
+# See docs/MODEL_STATUS.md "Quarantined".
 
 
 # --------------------------------------------------------------------------- #
