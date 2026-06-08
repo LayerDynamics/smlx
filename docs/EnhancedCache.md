@@ -462,17 +462,7 @@ cache, breaker = make_cache_with_monitoring(
 
 ## Contributing
 
-To add enhanced cache support to a new model:
-
-1. Create `cache.py` module in model directory
-2. Implement `make_cache()` and `make_cache_with_monitoring()`
-3. Set appropriate `model_size_gb` and architecture parameters
-4. Export cache functions in `__init__.py`
-5. Update model's `generate.py` to import from local cache module
-
-See existing implementations as templates:
-- `smlx/models/SmolLM2_135M/cache.py`
-- `smlx/models/Moondream2/cache.py`
+Caching is **model-agnostic** — there are no per-model cache modules. The shared factories live in smlx/utils/cache.py (make_cache, make_kv_caches, reset_cache, KVCache, RotatingKVCache) and expect the layer count as an integer (num_layers). Memory-pressure monitoring and advanced cache configurations (such as quantized or rotating caches) are provided by smlx/kv_cache/kv_manager.py (KVCacheManager.create_*(..., enable_monitoring=True)). To extend caching behaviour, work in those two modules — they apply to every curated model automatically.
 
 ## License
 

@@ -66,7 +66,7 @@ python -m smlx.tools.download_data --list
 - `testmini`: 1,000 samples (~100 MB) - **INCLUDED BY DEFAULT**
 - `test`: 5,141 samples (~500 MB) - Download via script
 
-**Models**: SmolVLM, nanoVLM, Moondream2, TinyLLaVA
+**Models**: SmolVLM, nanoVLM, moondream3, TinyLLaVA
 
 **Citation**:
 
@@ -170,7 +170,7 @@ python -m smlx.tools.download_data --list
 4. Key Information Extraction (100 samples)
 5. Handwritten Math Expression Recognition (100 samples)
 
-**Models**: TrOCR, Donut, SmolVLM, nanoVLM
+**Models**: OCR (SmolVLM via mlx-vlm), nanoVLM, moondream3
 
 **Citation**:
 
@@ -312,7 +312,7 @@ python -m smlx.tools.download_data --list
 
 **Audio Format**: 22.05 kHz, mono, WAV
 
-**Models**: Chatterbox, Orpheus
+**Models**: Kokoro (TTS, mlx-audio)
 
 **License**: Public Domain
 
@@ -330,7 +330,7 @@ python -m smlx.tools.download_data --list
 
 **Categories**: Dog, rain, crying baby, door knock, helicopter, chainsaw, rooster, fire, car horn, church bells
 
-**Models**: YAMNet
+**Models**: AST / AudioSet (audio classification, transformers)
 
 **License**: CC BY-NC 3.0 (research/education use)
 

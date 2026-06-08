@@ -353,13 +353,12 @@ response = generate(
 - SmolLM2-360M (1.2GB)
 
 **Vision-Language Models:**
-- SmolVLM-256M (1.2GB)
-- SmolVLM-500M-Instruct (2.0GB)
-- nanoVLM (0.9GB)
-- Moondream2 (2.0GB)
-- TinyLLaVA-1.5B (5.5GB)
-- TinyLLaVA-2.0B (7.5GB)
-- TinyLLaVA-3.1B (11.5GB)
+- SmolVLM-256M (~1.2GB)
+- SmolVLM-500M-Instruct (~2.0GB)
+- nanoVLM (~0.9GB)
+- TinyLLaVA / nanoLLaVA (~3GB)
+- moondream3 4-bit (~5GB; documented performance exception)
+- SmolVLM2-2.2B, Qwen2-VL-2B 4-bit (larger VLMs; still fit the 36GB budget)
 
 #### Memory Tiers
 

@@ -147,13 +147,10 @@ git commit -m "Add feature: description of feature"
 **Example:**
 
 ```text
-feat: add Donut-base document model
+feat: add qwen3-vl to the runner zoo
 
-Implement Donut-base for document understanding with:
-- Model architecture in model.py
-- Loading from HuggingFace Hub
-- Document parsing interface
-- Examples and tests
+Register qwen3-vl (mlx-vlm) in runner_adapters.py and confirm it passes the
+fail-closed gate (smlx run --verify qwen3-vl).
 
 Closes #123
 ```
@@ -169,77 +166,51 @@ git push origin feature/your-feature-name
 
 ## Contributing Models
 
-**IMPORTANT: SMLX only accepts "smol" models (< 1B parameters).**
+SMLX does **not** accept hand-written model forward passes — every model routes to a
+maintained upstream library (mlx-lm / mlx-vlm / mlx-whisper / mlx-embeddings /
+mlx-audio / onnxruntime / transformers) or real deterministic code. Contributing a
+model means **registering an alias**, not writing a `model.py`.
 
 ### Model Requirements
 
-Before contributing a model, ensure it meets these requirements:
+1. **Backend:** the architecture is supported by an upstream library (or you wire a
+   real deterministic path) — no bespoke forward pass.
+2. **Memory:** loads and runs within the 36 GB unified-memory budget.
+3. **Correctness:** passes the fail-closed gate (`smlx run --verify <alias>`).
+4. **License:** permissive (MIT, Apache 2.0, BSD) where applicable.
+5. **Size:** a *guideline* — prefer < 1B parameters; a larger model is admitted as a
+   documented performance exception when it fits memory and passes the gate (e.g.
+   the ~1.57B `moondream3`).
 
-1. **Size:** < 1B parameters (< 500M preferred)
-2. **License:** Permissive license (MIT, Apache 2.0, BSD)
-3. **Quality:** Proven performance on benchmarks
-4. **MLX Compatible:** Works with MLX framework
-5. **Documentation:** Clear usage examples and documentation
+### Model Contribution Checklist
 
-### Model Implementation Checklist
+- [ ] Architecture is supported by an upstream backend (no bespoke `model.py`)
+- [ ] Register the alias in `smlx/models/runner_adapters.py`
+- [ ] (Optional) Add it to `mlx_backend.ZOO` for `smlx models verify` coverage
+- [ ] `smlx run --verify <alias>` passes (real, correct output)
+- [ ] Update `docs/MODEL_STATUS.md` (alias, modality, backend, repo)
+- [ ] Note any performance-exception justification if > 1B parameters
 
-- [ ] Model has < 1B parameters
-- [ ] Create model directory: `smlx/models/YourModel/`
-- [ ] Implement required modules:
-  - [ ] `config.py` - Model configuration
-  - [ ] `model.py` - Model architecture (MLX-based)
-  - [ ] `loader.py` - Loading from HuggingFace Hub
-  - [ ] `generate.py` or `classify.py` - Inference interface
-  - [ ] `__init__.py` - Public API exports
-- [ ] Add example: `examples/models/your_model/`
-- [ ] Add integration test: `tests/integration/test_your_model.py`
-- [ ] Quantization support (4-bit/8-bit)
-- [ ] Documentation:
-  - [ ] Docstrings in all modules
-  - [ ] Usage examples in README
-  - [ ] Model card (architecture, training, limitations)
-- [ ] Performance benchmarks
-
-### Model Structure Template
-
-See [docs/ModelImplementations.md](docs/ModelImplementations.md) for detailed template.
-
-**Minimal example:**
+### How to register an alias
 
 ```python
-# smlx/models/YourModel/model.py
-import mlx.core as mx
-import mlx.nn as nn
+# smlx/models/runner_adapters.py
 
-class YourModel(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        # Define layers...
+# Vision-language model (mlx-vlm): alias -> (repo, note)
+_VLM_BACKEND["my-vlm"] = ("org/My-VLM-mlx-4bit", "My-VLM (mlx-vlm)")
 
-    def __call__(self, x):
-        # Forward pass...
-        return x
-
-# smlx/models/YourModel/loader.py
-from pathlib import Path
-from huggingface_hub import snapshot_download
-from .model import YourModel
-from .config import DEFAULT_CONFIG
-
-def load(model_name: str = "default"):
-    """Load model from HuggingFace Hub."""
-    # Download model
-    path = snapshot_download(repo_id=model_name)
-
-    # Load config and weights
-    config = DEFAULT_CONFIG
-    model = YourModel(config)
-
-    # Load weights...
-    model.eval()
-    return model
+# Language model (mlx-lm): alias -> repo
+_LM_BACKEND["my-lm"] = "org/My-LM-mlx"
 ```
+
+```bash
+smlx run --verify my-vlm        # must pass the fail-closed correctness gate
+```
+
+For a modality without an existing backend dict, build a `RunEntry` with a `loader`
+and a `runner` callable that returns a `RunOutput` — see the ASR / TTS / VAD / CAD
+blocks in `runner_adapters.py` as templates. See
+[ModelImplementations.md](ModelImplementations.md) for the full guide.
 
 ## Code Style
 
@@ -490,7 +461,7 @@ See [YourModel API](docs/api/yourmodel.md) for details.
 Use clear, descriptive titles:
 
 ```text
-feat: add Donut-base document model
+feat: add qwen3-vl to the runner zoo
 fix: resolve memory leak in KV cache
 docs: update quantization guide
 test: add integration tests for SmolVLM
