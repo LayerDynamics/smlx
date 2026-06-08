@@ -553,36 +553,50 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _yamnet_loader():
-    from smlx.models.YAMNet import load
+# Real audio-event classification via the maintained AST AudioSet model
+# (transformers). The bespoke YAMNet's log-mel front-end didn't match its weights
+# (classified speech as "Timpani"); AST classifies speech as "Speech" with high
+# confidence. The YAMNet package is quarantined (not wired here).
+_AST_REPO = "MIT/ast-finetuned-audioset-10-10-0.4593"
 
-    return load()
+
+def _ast_loader():
+    from transformers import ASTForAudioClassification, AutoFeatureExtractor
+
+    fe = AutoFeatureExtractor.from_pretrained(_AST_REPO)
+    model = ASTForAudioClassification.from_pretrained(_AST_REPO).eval()
+    return (model, fe)
 
 
-def _yamnet_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
-    from smlx.models.YAMNet import classify
+def _ast_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
+    import torch
 
-    preds = classify(loaded, audio, top_k=opts.get("top_k", 5))
-    payload = [{"label": p.label, "score": float(p.score)} for p in preds]
-    # Real weights load and the (now-fixed) MobileNet forward runs end to end, but
-    # the bespoke log-mel feature extraction does not yet match YAMNet's expected
-    # input, so the predicted labels are not yet reliable. Honest gap, not random.
+    model, fe = loaded
+    arr, sr = _load_audio_16k(audio)  # reuse the VAD helper (16k mono float)
+    inputs = fe(arr, sampling_rate=16000, return_tensors="pt")
+    with torch.no_grad():
+        probs = torch.softmax(model(**inputs).logits, dim=-1)[0]
+    top = torch.topk(probs, int(opts.get("top_k", 5)))
+    payload = [
+        {"label": model.config.id2label[int(i)], "score": round(float(p), 4)}
+        for p, i in zip(top.values, top.indices)
+    ]
     return RunOutput(
         kind="labels",
-        status=WeightStatus.TRAINED_GAP,
-        reason="real weights + forward; log-mel feature extraction mismatch -> labels unreliable",
+        status=WeightStatus.TRAINED,
+        reason="AST AudioSet (transformers)",
         data=payload,
     )
 
 
 register(
     RunEntry(
-        "yamnet",
+        "ast",
         "audio_cls",
         ("audio",),
-        _yamnet_loader,
-        _yamnet_runner,
-        note="YAMNet audio-event classification (real weights; feature-extraction gap)",
+        _ast_loader,
+        _ast_runner,
+        note="AST AudioSet classifier (transformers) — real audio-event labels",
     )
 )
 
