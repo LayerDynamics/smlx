@@ -79,7 +79,9 @@ ZOO: dict[str, ZooEntry] = {
     "whisper-tiny": ZooEntry(
         "whisper-tiny", "mlx-community/whisper-tiny", "asr", Backend.SMLX, "39M"
     ),
-    "minilm": ZooEntry("minilm", "all-MiniLM-L6-v2", "embeddings", Backend.SMLX, "23M"),
+    "minilm": ZooEntry(
+        "minilm", "mlx-community/all-MiniLM-L6-v2-4bit", "embeddings", Backend.SMLX, "23M"
+    ),
 }
 
 # VLM architecture hints for auto-detecting an unregistered repo id.
@@ -162,17 +164,16 @@ def load(
             model, processor, backend, repo, config=config, modality=modality or "vlm"
         )
     elif backend is Backend.SMLX:
-        # SMLX's own verified implementations for modalities mlx-lm/mlx-vlm
-        # don't cover (ASR via Whisper, sentence embeddings via MiniLM).
+        # Modalities mlx-lm / mlx-vlm don't cover: ASR (mlx-whisper) and sentence
+        # embeddings (mlx-embeddings).
         if modality == "asr":
-            from smlx.models.Whisper_tiny import load as whisper_load
-
-            model, tokenizer = whisper_load(repo)
-            bm = BackendModel(model, tokenizer, backend, repo, modality="asr")
+            # mlx_whisper.transcribe loads and caches the model by repo id, so the
+            # BackendModel just carries the repo.
+            bm = BackendModel(repo, None, backend, repo, modality="asr")
         elif modality == "embeddings":
-            from smlx.models.MiniLM import load as minilm_load
+            from mlx_embeddings.utils import load as emb_load
 
-            model, tokenizer = minilm_load(repo)
+            model, tokenizer = emb_load(repo)
             bm = BackendModel(model, tokenizer, backend, repo, modality="embeddings")
         else:
             raise ValueError(f"SMLX-native backend has no handler for modality {modality!r}")
@@ -189,22 +190,24 @@ def load(
 
 
 def transcribe(bm: BackendModel, audio) -> str:
-    """Transcribe audio with an ASR backend model (Whisper)."""
+    """Transcribe audio with an ASR backend model (mlx-whisper)."""
     if bm.modality != "asr":
         raise ValueError(f"transcribe() requires an ASR model, got modality {bm.modality!r}")
-    from smlx.models.Whisper_tiny import transcribe as whisper_transcribe
+    import mlx_whisper
 
-    result = whisper_transcribe(audio, bm.model, bm.processor, language="en", verbose=None)
+    result = mlx_whisper.transcribe(audio, path_or_hf_repo=bm.repo, language="en")
     return (result.get("text") or "").strip()
 
 
 def embed(bm: BackendModel, sentences) -> Any:
-    """Embed sentences with an embeddings backend model (MiniLM)."""
+    """Embed sentences with an embeddings backend model (mlx-embeddings)."""
     if bm.modality != "embeddings":
         raise ValueError(f"embed() requires an embeddings model, got modality {bm.modality!r}")
-    from smlx.models.MiniLM import encode
+    import numpy as np
 
-    return encode(bm.model, bm.processor, sentences)
+    sents = sentences if isinstance(sentences, list) else [sentences]
+    out = bm.model(**bm.processor.batch_encode_plus(sents, return_tensors="mlx", padding=True))
+    return np.asarray(out.text_embeds if hasattr(out, "text_embeds") else out[0])
 
 
 def apply_quantization(bm: BackendModel, preset: str) -> BackendModel:
