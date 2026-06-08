@@ -17,27 +17,34 @@ import pytest
 from smlx.models import runner
 from smlx.models.runner import WeightStatus
 
-# The complete set of implemented model packages the runner must cover.
+# The verified-real runner registry. Every entry routes to a real upstream impl
+# or a real deterministic one; bespoke garbage (Orpheus/Chatterbox/TrOCR/Donut/
+# YAMNet/untrained smolGenCad/degenerate moondream2) is quarantined, NOT listed.
 EXPECTED_KEYS = {
     "smollm2-135m",
     "smollm2-360m",
     "smolvlm-256m",
     "smolvlm-500m",
     "nanovlm",
-    "moondream2",
     "tinyllava",
     "whisper-tiny",
-    "orpheus-150m",
-    "chatterbox",
     "kokoro",
     "ocr",
-    "trocr-small",
-    "donut-base",
     "minilm",
     "all-minilm-l6-v2",
     "silero-vad",
+    "ast",
+    "cad",
+}
+# Models that must NOT be wired into the runner (they produce garbage).
+QUARANTINED = {
+    "orpheus-150m",
+    "chatterbox",
+    "trocr-small",
+    "donut-base",
     "yamnet",
     "smolgencad",
+    "moondream2",
 }
 EXPECTED_MODALITIES = {
     "language",
@@ -138,42 +145,71 @@ def test_pipeline_error_is_captured_not_raised(monkeypatch):
     assert "kaboom" in (r.error or "")
 
 
+@pytest.mark.unit
+def test_quarantined_models_are_not_wired():
+    """The bespoke garbage models must NOT appear in the runner registry."""
+    keys = {e.key for e in runner.list_entries()}
+    leaked = keys & QUARANTINED
+    assert not leaked, f"quarantined models wired into the runner: {leaked}"
+
+
+@pytest.mark.unit
+def test_no_bespoke_forward_imported_by_adapters():
+    """No adapter may import a bespoke smlx.models.<Model> forward pass.
+
+    Every entry must route to a real upstream impl (mlx_backend / mlx_whisper /
+    mlx_embeddings / mlx_audio / onnxruntime / transformers) or a real
+    deterministic module (text_to_cad). This guards against silently
+    re-introducing a hand-written forward.
+    """
+    import pathlib
+
+    src = pathlib.Path(runner.__file__).with_name("runner_adapters.py").read_text()
+    bespoke = [
+        "from smlx.models.SmolLM2",
+        "from smlx.models.Whisper_tiny",
+        "from smlx.models.MiniLM",
+        "from smlx.models.all_MiniLM",
+        "from smlx.models.nanoVLM",
+        "from smlx.models.SmolVLM",
+        "from smlx.models.TinyLLaVA",
+        "from smlx.models.Moondream2",
+        "from smlx.models.TrOCR_small",
+        "from smlx.models.Donut_base",
+        "from smlx.models.YAMNet",
+        "from smlx.models.Orpheus",
+        "from smlx.models.Chatterbox",
+        "from smlx.models.SileroVAD",
+    ]
+    found = [b for b in bespoke if b in src]
+    assert not found, f"adapters import bespoke forwards: {found}"
+
+
 # --------------------------------------------------------------------------- #
-# requires_model — actually run pipelines and assert output happens.          #
+# requires_model — run real pipelines and assert correct output.              #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.requires_model
-def test_produce_cad_pipeline_output_happens(tmp_path):
-    """smolGenCad has no public weights -> PIPELINE-ONLY, but output must happen."""
-    r = runner.produce("smolgencad", text="Create a cylinder radius 5", out_dir=str(tmp_path))
+def test_produce_cad_real_cadquery(tmp_path):
+    """`cad` produces real, valid CadQuery with the expected bounding box."""
+    r = runner.produce(
+        "cad", text="a cylinder with radius 5mm and height 10mm", out_dir=str(tmp_path)
+    )
     assert r.ok is True
-    assert r.status is WeightStatus.PIPELINE_ONLY
-    assert r.artifact_path and r.artifact_path.endswith(".json")
+    assert r.status is WeightStatus.TRAINED
+    assert "(10.0, 10.0, 10.0)" in r.output_repr  # verified bbox
     import os
 
-    assert os.path.exists(r.artifact_path)
-    assert os.path.exists(r.artifact_path.replace(".json", ".py"))  # CadQuery python too
-
-
-@pytest.mark.requires_model
-def test_produce_tts_pipeline_output_happens(tmp_path):
-    """Orpheus has random weights -> PIPELINE-ONLY noise, but a wav must be written."""
-    r = runner.produce("orpheus-150m", text="Hello world", out_dir=str(tmp_path))
-    assert r.ok is True
-    assert r.status is WeightStatus.PIPELINE_ONLY
-    assert r.artifact_path and r.artifact_path.endswith(".wav")
-    import os
-
-    assert os.path.exists(r.artifact_path)
+    assert r.artifact_path and os.path.exists(r.artifact_path.replace(".json", ".py"))
 
 
 @pytest.mark.requires_model
 def test_produce_lm_trained_text(tmp_path):
-    r = runner.produce("smollm2-135m", text="In one sentence, what is MLX?", out_dir=str(tmp_path))
+    r = runner.produce("smollm2-135m", text="What is the capital of France?", out_dir=str(tmp_path))
     assert r.ok is True
     assert r.status is WeightStatus.TRAINED
-    assert len(r.output_repr.split()) >= 4  # real, multi-word answer
+    assert "paris" in r.output_repr.lower()  # real, correct answer
 
 
 @pytest.mark.requires_model
@@ -182,3 +218,12 @@ def test_produce_embeddings_trained(tmp_path):
     assert r.ok is True
     assert r.status is WeightStatus.TRAINED
     assert "embeddings shape" in r.output_repr
+
+
+@pytest.mark.requires_model
+def test_verify_gate_passes_for_real_models():
+    """The fail-closed correctness gate passes for representative real models."""
+    from smlx.models import runner_verify
+
+    results, all_ok = runner_verify.verify(["smollm2-135m", "cad", "minilm"])
+    assert all_ok, [(r.model, r.detail) for r in results if not r.ok]
