@@ -381,10 +381,11 @@ python -m smlx.evals.text_eval \
 
 ```python
 from smlx.evals.text_eval import evaluate_perplexity
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Evaluate
 results = evaluate_perplexity(
@@ -458,10 +459,11 @@ from smlx.bench.suites.text_generation import (
     benchmark_temperature_effects,
     run_comprehensive_suite,
 )
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model once
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Run context scaling benchmark
 context_results = benchmark_context_scaling(

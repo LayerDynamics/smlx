@@ -546,9 +546,11 @@ python -m smlx.tools.analyze_variance results/run_*.json
 For maximum throughput, use batch processing:
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
+from smlx.models import load
+from smlx.utils.generation import generate
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 prompts = ["Question 1", "Question 2", "Question 3"]
 
