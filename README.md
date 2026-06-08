@@ -1,6 +1,6 @@
 # SMLX (smol MLX)
 
-**Small models, big performance** - Vision, language, audio, and multimodal models optimized for Apple Silicon M4 with MLX.
+**Small models, big performance** — vision, language, audio, and multimodal models that run on Apple Silicon through one unified, verified API.
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![MLX](https://img.shields.io/badge/MLX-Apple%20Silicon-orange.svg)](https://github.com/ml-explore/mlx)
@@ -8,142 +8,135 @@
 
 ## Overview
 
-SMLX focuses exclusively on **small, efficient models** (< 1B parameters) that run exceptionally well on Apple's M4 chipset with unified memory architecture. Unlike general-purpose ML frameworks, SMLX is purpose-built for:
+SMLX is a curated zoo of small, efficient models for Apple's MLX framework,
+tuned for the M-series (especially M4) and its unified-memory architecture. It is
+purpose-built for:
 
-- **On-device inference** - No cloud required, your data stays private
-- **Memory efficiency** - Models fit in 8-36GB unified memory
-- **Optimized performance** - Built specifically for M4's architecture
-- **Practical deployment** - Production-ready with quantization, caching, and batching
+- **On-device inference** — no cloud required; your data stays private
+- **Memory efficiency** — every model fits the 36 GB unified-memory budget
+- **Real, verified output** — a fail-closed gate proves each model produces
+  correct results, not placeholder noise
+- **Practical deployment** — quantization, KV-cache management, an
+  OpenAI-compatible server, agents, and an evaluation suite
+
+### How it works — no hand-written forward passes
+
+SMLX does **not** re-implement model forward passes. Every curated model routes to
+a maintained upstream implementation (or real deterministic code), behind a single
+runner:
+
+- **mlx-lm** — language models
+- **mlx-vlm** — vision-language models (and OCR via SmolVLM)
+- **mlx-whisper** — speech recognition
+- **mlx-embeddings** — sentence embeddings
+- **mlx-audio** — text-to-speech (Kokoro)
+- **onnxruntime** — voice-activity detection (Silero)
+- **transformers** — audio classification (AST / AudioSet)
+- **deterministic CadQuery parser** — text-to-CAD
+
+SMLX's value sits on top: a curated "smol" zoo, quantization (`smlx.quant`), a
+unified API, an OpenAI-compatible server, agents, and the bench/eval/verify trust
+layer.
+
+### "smol" is performance-based, not a hard cap
+
+A model qualifies on three *performance* gates on the M4 target — **memory** (fits
+36 GB with headroom), **speed** (meets its modality's floor), and **correctness**
+(produces real output, verified by the gate). Parameter count is a *guideline*
+(target < 500M, prefer < 1B); a larger model is admitted as a **documented
+performance exception** when it still fits memory and runs acceptably (e.g. the
+~1.57B `moondream3`, the 2.2B SmolVLM2, the 2B Qwen2-VL 4-bit).
 
 ## Key Features
 
-### 🎯 Small Model Focus
-
-All models are "smol" (< 1B parameters), ensuring fast inference and low memory usage on consumer hardware.
-
-### 🚀 MLX-Native
-
-Built from the ground up using Apple's MLX framework for optimal performance on Apple Silicon.
-
-### 🔧 Quantization Support
-
-Built-in support for:
-
-- **GPTQ** - Post-training quantization for language models
-- **AWQ** - Activation-aware weight quantization
-- **Dynamic Quantization** - Runtime weight quantization
-- **LoRA/DoRA** - Parameter-efficient fine-tuning
-
-### 🌐 Production-Ready
-
-Complete server infrastructure with:
-
-- OpenAI-compatible REST API
-- Streaming responses
-- Model management and caching
-- Authentication and rate limiting
-- Docker/Kubernetes deployment
-
-### 🤖 Agent System
-
-Sophisticated reasoning with:
-
-- **ReAct** - Reasoning + Acting agents
-- **Chain-of-Thought** - Step-by-step reasoning
-- **Self-Consistency** - Multiple reasoning paths
-- Tool integration and custom tool creation
-
-### 📊 Evaluation Suite
-
-Built-in benchmarks for:
-
-- Math-Vision-Language tasks (MathVista)
-- Multimodal understanding (MMMU, MMStar)
-- OCR capabilities (OCRBench)
-- Custom evaluation pipelines
+- **Unified runner** — one entrypoint (`smlx run` / `smlx.models.load`) for every
+  modality, with a fail-closed correctness gate (`smlx run --verify`).
+- **Quantization** (`smlx.quant`) — GPTQ, AWQ, DWQ, 4/8-bit, LoRA/DoRA, applied on
+  top of the correct upstream model at load time.
+- **OpenAI-compatible server** — `/v1/chat/completions`, `/v1/completions`,
+  `/v1/audio/transcriptions`, `/v1/embeddings`, `/v1/models`, with streaming.
+- **Agents** — ReAct, Chain-of-Thought, and Self-Consistency with tool integration.
+- **Evaluation suite** — MathVista, MMMU, MMStar, OCRBench, perplexity, WER.
 
 ## Supported Models
 
-### Language Models (LLMs)
+Two verification surfaces, both real and fail-closed:
 
-The **curated zoo** below is verified end to end by `smlx models verify` — every
-entry loads, runs, and produces real (coherent / correct) output. See
-[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md) for the live board and tok/s.
+- **`smlx run --verify`** — the **runner registry (15 entries)**, covering every
+  modality. Currently **15/15** produce real, correct output.
+- **`smlx models verify`** — the **backend ZOO (10 models)**: LM/VLM/ASR/embeddings
+  through mlx-lm / mlx-vlm / mlx-whisper / mlx-embeddings, with optional
+  `--enforce-perf` speed floors.
 
-- **SmolLM2-135M / -360M / -1.7B** ✓ — chat-capable language models (mlx-lm)
-- **Qwen2.5-0.5B-Instruct** ✓ — 4-bit language model (mlx-lm)
+See [`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md) for the live board.
 
-### Vision-Language Models (VLMs)
+### Language (mlx-lm)
 
-- **SmolVLM-256M / -500M-Instruct** ✓ — compact vision-language understanding (mlx-vlm)
-- **SmolVLM2-2.2B-Instruct** ✓ — larger multimodal model (mlx-vlm)
-- **Qwen2-VL-2B-Instruct** ✓ — 4-bit VLM (mlx-vlm)
-- **nanoVLM / TinyLLaVA** ✓ — compact VLMs (mlx-vlm)
+- **SmolLM2-135M / -360M / -1.7B** — chat-capable language models
+- **Qwen2.5-0.5B-Instruct** — 4-bit language model
 
-### Audio Models
+### Vision-language (mlx-vlm)
 
-- **Whisper-tiny** ✓ — speech recognition (mlx-whisper)
-- **AST (AudioSet)** ✓ — audio classification (transformers)
-- **Kokoro** ✓ — text-to-speech (mlx-audio)
-- **Silero VAD** ✓ — voice-activity detection (onnxruntime)
+- **SmolVLM-256M / -500M-Instruct** — compact vision-language understanding
+- **nanoVLM**, **TinyLLaVA** — compact VLMs
+- **moondream3** (4-bit, ~1.57B) — documented performance exception
+- **SmolVLM2-2.2B-Instruct**, **Qwen2-VL-2B-Instruct (4-bit)** — larger VLMs
 
-### Embedding / OCR / CAD
+### Audio
 
-- **MiniLM / all-MiniLM-L6-v2** ✓ — sentence embeddings (mlx-embeddings)
-- **OCR** ✓ — document text recognition (SmolVLM via mlx-vlm)
-- **CAD** ✓ — text-to-CAD parametric generation (deterministic CadQuery parser)
+- **Whisper-tiny** — speech recognition (mlx-whisper)
+- **Kokoro** — text-to-speech (mlx-audio)
+- **Silero VAD** — voice-activity detection (onnxruntime)
+- **AST (AudioSet)** — audio classification (transformers)
 
-Every entry above is verified end to end by `smlx run --verify`. The earlier
-bespoke hand-written model packages were removed; each modality now runs through
-a maintained upstream implementation (mlx-lm / mlx-vlm / mlx-whisper /
-mlx-embeddings / mlx-audio / onnxruntime / transformers) or real deterministic
-code, so there is no separate "unverified" tier.
+### Embeddings / OCR / CAD
+
+- **MiniLM / all-MiniLM-L6-v2** — sentence embeddings (mlx-embeddings)
+- **OCR** — document text recognition (SmolVLM via mlx-vlm)
+- **CAD** — text-to-CAD parametric generation (deterministic CadQuery parser)
 
 ## Installation
 
 ### Requirements
 
-- Python >= 3.9, < 3.13
 - macOS with Apple Silicon (M1/M2/M3/M4)
+- Python >= 3.9, < 3.13
 - Xcode Command Line Tools
 
 ### Install from source
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/smlx.git
+git clone https://github.com/LayerDynamics/smlx.git
 cd smlx
 
 # Using Conda (recommended)
 conda env create -f environment.yml
 conda activate smlx
-
-# Or using pip
 pip install -e .
 
-# With optional dependencies
+# Or using pip with optional extras
 pip install -e ".[all]"          # All features
 pip install -e ".[dev]"          # Development tools
-pip install -e ".[evals]"        # Evaluation suite
+pip install -e ".[audio]"        # TTS / VAD / audio-classification stack
 pip install -e ".[server]"       # API server
 ```
+
+> After cloning, run `git lfs pull` to fetch the LFS-tracked datasets under `data/`.
 
 ## Quick Start
 
 SMLX gives you **one API** over a curated zoo of verified small models. Each model
-runs through its correct upstream MLX implementation (mlx-lm / mlx-vlm), and SMLX's
-quantization applies on top. See [`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md) for the
-full verified board (10/10 models pass `smlx models verify`).
+runs through its correct upstream implementation; SMLX quantization applies on top.
 
 ```python
 from smlx.models import load, generate
 
-# Any zoo alias — auto-routes to the right backend
+# Any zoo alias auto-routes to the right backend
 m = load("smollm2-360m")
 print(generate(m, "Explain quantum computing in simple terms.", max_tokens=100))
 ```
 
-### Vision-Language Understanding
+### Vision-language understanding
 
 ```python
 from smlx.models import load, generate
@@ -152,7 +145,7 @@ vlm = load("smolvlm-256m")
 print(generate(vlm, "What is in this image?", image="photo.jpg", max_tokens=40))
 ```
 
-### Audio Transcription
+### Audio transcription
 
 ```python
 from smlx.models import load
@@ -172,10 +165,10 @@ emb = load("minilm")
 vectors = embed(emb, ["a cat sat on the mat", "a feline rested on the rug"])
 ```
 
-### Model Quantization (SMLX value-add)
+### Quantization (SMLX value-add)
 
-Quantize any zoo model with SMLX's own system at load time — the model still runs
-through its correct upstream implementation:
+Quantize any zoo model at load time — it still runs through its correct upstream
+implementation:
 
 ```python
 from smlx.models import load, generate
@@ -184,66 +177,60 @@ m = load("smollm2-360m", quantize="4bit")   # correct impl + SMLX 4-bit
 print(generate(m, "What is the capital of France?", max_tokens=24))  # -> Paris
 ```
 
-### Verify it yourself
+### Run any model from the CLI
 
-```bash
-smlx models list              # the curated zoo
-smlx models verify            # load + run every model, check output is REAL
-smlx generate smolvlm-256m "What's this?" -i photo.jpg -q 4bit
-```
-
-### Run any model (`smlx run`)
-
-`smlx run` produces **real, correct** output across every modality (language, VLM,
-ASR, TTS, OCR, VAD, audio-classification, embeddings, CAD). There are **no bespoke
-hand-written forward passes** — each entry routes to a maintained upstream impl
-(mlx-lm / mlx-vlm / mlx-whisper / mlx-embeddings / mlx-audio / onnxruntime /
-transformers) or a real deterministic one, and a **fail-closed correctness gate**
-proves it. Audio/CAD/json artifacts land in `data/output/`. See
-[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md#run-any-model-smlx-run--100-real-gate-verified).
+`smlx run` produces **real, correct** output across every modality. Audio/CAD/JSON
+artifacts land in `data/output/`.
 
 ```bash
 smlx run --list                                # every runnable model + what it needs
-smlx run --verify                              # real per-modality correctness gate (14/14)
+smlx run --verify                              # fail-closed correctness gate (15/15)
 smlx run smollm2-135m --text "What is the capital of France?"   # -> Paris
-smlx run kokoro --text "Hello world"           # real TTS -> data/output/kokoro.wav
-smlx run ocr --document scan.png               # real OCR (SmolVLM via mlx-vlm)
+smlx run smolvlm-256m -i photo.jpg --text "What is this?"       # VLM
+smlx run whisper-tiny --audio clip.wav         # ASR
+smlx run kokoro --text "Hello world"           # TTS -> data/output/kokoro.wav
+smlx run ocr --document scan.png               # OCR (SmolVLM via mlx-vlm)
 smlx run cad  --text "cylinder radius 5mm height 10mm"          # real CadQuery
 smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
 ```
 
-### Agent with Tools
+Verify the backend zoo (with optional speed floors):
+
+```bash
+smlx models list                 # the curated backend zoo
+smlx models verify               # load + run every zoo model, assert real output
+smlx models verify --enforce-perf
+```
+
+### Agent with tools
 
 ```python
 from smlx.agents import ReActAgent
 from smlx.agents.tools import ToolRegistry, calculator, get_time
-from smlx.models import load_model
+from smlx.models import load
 
-# Setup
-bm = load_model("mlx-community/SmolLM2-135M-Instruct")
+# load() returns a BackendModel: .model / .processor / .backend / .repo / .modality
+bm = load("smollm2-135m")
 registry = ToolRegistry()
 registry.register(calculator)
 registry.register(get_time)
 
-# Create agent
 agent = ReActAgent(bm.model, bm.processor, registry)
-
-# Run task
 response = agent.run("What is 15 * 23, and what time is it?")
 print(response.content)
 ```
 
-### REST API Server
+### REST API server
 
 ```bash
-# Start server
-python -m smlx.server.app --host 0.0.0.0 --port 8000
+# Start the OpenAI-compatible server (host/port via the CLI)
+smlx server --host 0.0.0.0 --port 8000
 
-# Use with curl
+# Chat completion
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "SmolLM2-135M-Instruct",
+    "model": "smollm2-135m",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": false
   }'
@@ -251,33 +238,21 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Documentation
 
-Comprehensive guides are available in the `docs/` directory:
+Guides live under `docs/`:
 
-- **[Model Implementations](docs/ModelImplementations.md)** - Guide to implementing new models
-- **[Server API](docs/Server.md)** - REST API reference and deployment
-- **[Agent System](docs/Agents.md)** - Agent types, tools, and reasoning patterns
-- **[CLI Tools](docs/Tools.md)** - Model download, conversion, and benchmarking
-- **[Quantization](docs/Quant.md)** - Quantization techniques and usage
-- **[Evaluation](docs/Eval.md)** - Benchmark suites and evaluation framework
+- **[Model Status](docs/MODEL_STATUS.md)** — the verified zoo board and backends
+- **[Quick Start](docs/QUICKSTART.md)** — a 5-minute walkthrough
+- **[Server API](docs/Server.md)** — REST API reference and deployment
+- **[Agent System](docs/Agents.md)** — agent types, tools, reasoning patterns
+- **[CLI Tools](docs/Tools.md)** — download, conversion, benchmarking
+- **[Quantization](docs/Quant.md)** — quantization techniques and usage
+- **[Evaluation](docs/EVALUATION.md)** — benchmark suites and the eval framework
+- **[Memory Management](docs/MemoryManagement.md)** / **[Enhanced KV Cache](docs/EnhancedCache.md)**
 
 ## Examples
 
-Working examples demonstrating all features:
-
-Every model runs through one real entrypoint — `smlx run` (see **Quick Start**):
-
-```bash
-# Real output from any model, verified by the fail-closed gate
-smlx run --list                                    # every runnable model
-smlx run smollm2-135m --text "What is MLX?"        # language
-smlx run whisper-tiny --audio clip.wav             # audio transcription
-smlx run ocr --document scan.png                   # OCR (SmolVLM via mlx-vlm)
-smlx run kokoro --text "Hello world"               # TTS -> data/output/kokoro.wav
-smlx run --verify                                  # correctness gate, all models
-```
-
-Standalone scripts under `examples/` cover the non-model subsystems (quant,
-gym/RL, server, eval, tools):
+Every model runs through one real entrypoint — `smlx run` (see **Quick Start**).
+Standalone scripts under `examples/` cover the non-model subsystems:
 
 ```bash
 python examples/quant/fp4_comparison.py            # quantization
@@ -288,205 +263,148 @@ python examples/eval/vlm_eval_example.py           # evaluation
 
 ## CLI Tools
 
-### Download Models and Datasets
-
 ```bash
-# Download specific model
-python -m smlx.tools.download_data --model mlx-community/SmolLM2-135M-Instruct
+# Download models / datasets
+smlx download --model mlx-community/SmolLM2-135M-Instruct
+smlx download --models            # all curated models
+smlx download --datasets          # evaluation datasets
+smlx download --all
 
-# Download all models
-python -m smlx.tools.download_data --models
+# Convert a HuggingFace model to MLX (optionally quantized)
+smlx convert ./hf-model ./mlx-out --quantize 4bit
 
-# Download evaluation datasets
-python -m smlx.tools.download_data --datasets
+# Transcribe audio (Whisper via mlx-whisper)
+smlx transcribe audio.wav --format srt
 
-# Download everything
-python -m smlx.tools.download_data --all
-```
+# Inspect bundled datasets
+smlx data list
+smlx data validate
 
-### Convert Models to MLX
-
-```bash
-# Convert with quantization
-python -m smlx.tools.convert2mlx \
-  --hf-path gpt2 \
-  --output-path ./models/gpt2-4bit \
-  --quantize \
-  --bits 4 \
-  --group-size 64
-```
-
-### Run Benchmarks
-
-```bash
-# Run all benchmarks
-python -m smlx.bench.run
-
-# Run specific suite
-python -m smlx.bench.run --suite llm
-python -m smlx.bench.run --suite vlm
-python -m smlx.bench.run --suite quantization
-
-# Compare results
-python -m smlx.tools.compare_results \
-  results/baseline.json \
-  results/optimized.json
+# Benchmarks
+smlx bench --list                 # available suites
+smlx bench llm -m smollm2-135m
+smlx bench quantization
 ```
 
 ## Development
 
-### Setup Development Environment
-
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
 
-# Run tests
+# Tests (see pytest.ini — filterwarnings=error, 60s timeout, strict markers)
 python -m pytest
-
-# Run specific test suite
+python -m pytest -m unit                  # unit tests only
+python -m pytest -m "not slow"            # skip slow tests
 python -m pytest tests/quant/test_gptq.py -v
 
-# Run with markers
-python -m pytest -m unit                 # Unit tests only
-python -m pytest -m "not slow"           # Skip slow tests
-python -m pytest -m integration          # Integration tests
-
 # Code quality
-black .                                  # Format code
-ruff check .                             # Lint code
-ruff check --fix .                       # Auto-fix issues
-mypy smlx/                               # Type check
+black .
+ruff check .
+ruff check --fix .
+mypy smlx/
 ```
 
-### Project Structure
+### Project structure
 
 ```text
 smlx/
 ├── agents/              # Agent system (ReAct, CoT, tools)
 ├── bench/               # Performance benchmarking
-├── evals/               # Evaluation benchmarks
+├── config/              # Per-model memory/perf presets, inclusion policy
+├── evals/               # Evaluation benchmarks (MathVista, MMMU, OCRBench, ...)
 ├── models/              # Model layer
-│   ├── runner.py        # Unified runner: one entrypoint per curated model
-│   ├── runner_verify.py # Fail-closed per-modality correctness gate
-│   ├── mlx_backend.py   # load/generate/transcribe/embed over upstream impls
-│   ├── registry.py      # Legacy load_model API (delegates to mlx_backend)
-│   ├── cad.py           # Deterministic text-to-CAD parser
-│   └── common/          # Shared layers (attention, MLP, MoE/switch)
-├── quant/               # Quantization (GPTQ, AWQ, LoRA)
-├── server/              # REST API server
-├── tools/               # CLI utilities
-└── utils/               # Shared utilities
+│   ├── runner.py            # Unified runner: REGISTRY + produce()/produce_all()
+│   ├── runner_adapters.py   # Registers each alias with its real backend
+│   ├── runner_verify.py     # Fail-closed per-modality correctness gate
+│   ├── mlx_backend.py       # load/generate/transcribe/embed over upstream libs
+│   ├── registry.py          # Legacy load_model() API (delegates to mlx_backend)
+│   ├── cad.py               # Deterministic text-to-CAD parser
+│   └── common/              # Shared layers (attention, MLP, MoE/switch)
+├── quant/               # Quantization (GPTQ, AWQ, DWQ, LoRA/DoRA, 4/8-bit, ...)
+├── server/              # OpenAI-compatible REST API
+├── tools/               # CLI utilities (download, convert)
+├── utils/               # Shared utilities (generation, sampling, cache, memory)
+└── main.py              # Click CLI entry point
 
 docs/                    # Documentation
-examples/                # Usage examples
+examples/                # Subsystem usage examples
 tests/                   # Test suite
-resources/               # Reference implementations (do not import)
+resources/               # Reference implementations (study, do not import)
 ```
 
-### Adding New Models
+### Adding a model
 
-See [docs/ModelImplementations.md](docs/ModelImplementations.md) for detailed guidelines. Quick checklist:
+There are **no per-model packages** — do not hand-reimplement forward passes.
+Register one entry in `smlx/models/runner_adapters.py` that points an alias at a
+real upstream repo + modality, then prove it:
 
-1. Create model directory in `smlx/models/YourModel/`
-2. Implement core modules (config.py, model.py, loader.py, generate.py)
-3. Add example in `examples/models/your_model/`
-4. Add integration test in `tests/integration/`
-5. Update documentation
+```python
+# in runner_adapters.py — e.g. another mlx-vlm model
+_VLM_BACKEND["my-vlm"] = ("org/My-VLM-mlx-4bit", "My-VLM (mlx-vlm)")
+```
 
-**Requirements:**
+```bash
+smlx run --verify my-vlm          # must pass the fail-closed correctness gate
+```
 
-- Must be "smol" (< 1B parameters preferred)
-- Must use MLX operations
-- Must support quantization
-- Must follow existing API patterns
+A model is admitted when it routes to a maintained upstream impl (or real
+deterministic code), fits the 36 GB budget, and passes `smlx run --verify`.
+Parameter count is a guideline (prefer < 1B); larger models are documented
+performance exceptions.
 
 ## Performance
 
-SMLX models are optimized for Apple Silicon with impressive performance on M4:
+Indicative throughput on M4 Pro (36 GB unified memory); not a committed floor —
+run `smlx models verify --enforce-perf` for the calibrated speed gates.
 
-| Model | Parameters | Memory | Tokens/sec | Quantization |
-|-------|-----------|---------|------------|--------------|
-| SmolLM2-135M | 135M | ~500MB | ~150 | 4-bit/8-bit |
-| SmolLM2-360M | 360M | ~1.3GB | ~100 | 4-bit/8-bit |
-| SmolVLM-256M | 256M | ~1GB | ~80 | 4-bit/8-bit |
-| SmolVLM-500M | 500M | ~2GB | ~60 | 4-bit/8-bit |
-| Whisper-tiny | 39M | ~150MB | Real-time | 8-bit |
-
-*Benchmarks on M4 Pro with 36GB unified memory*
-
-## Use Cases
-
-### On-Device AI
-
-- Privacy-sensitive applications
-- Offline-first mobile/desktop apps
-- Edge computing scenarios
-
-### Rapid Prototyping
-
-- Quick experimentation with small models
-- Testing architectures before scaling
-- Educational projects
-
-### Production Deployment
-
-- Low-latency inference APIs
-- Cost-effective model serving
-- Resource-constrained environments
+| Model | Parameters | Backend | Tokens/sec |
+|-------|-----------|---------|------------|
+| SmolLM2-135M | 135M | mlx-lm | ~115 |
+| SmolLM2-360M | 360M | mlx-lm | ~114 |
+| SmolVLM-256M | 256M | mlx-vlm | ~55 |
+| SmolVLM-500M | 500M | mlx-vlm | ~52 |
+| Whisper-tiny | 39M | mlx-whisper | ~1.3 s/clip |
+| MiniLM | 23M | mlx-embeddings | ~291 sent/s |
 
 ## Resources
 
-The `resources/` directory contains reference implementations from various MLX projects for learning and pattern-borrowing:
+The `resources/` directory contains reference implementations from MLX-ecosystem
+projects (mlx, mlx-examples, mlx-lm, mlx-vlm, lightning-whisper-mlx) for learning
+and pattern-borrowing.
 
-- `mlx/` - Core MLX framework
-- `mlx-examples/` - MLX examples
-- `mlx-lm/` - Language models
-- `mlx-vlm/` - Vision-language models
-- `lightning-whisper-mlx/` - Whisper implementation
-
-**Important:** These are for reference only - do not import directly. Study patterns and adapt code into `smlx/` modules.
-
-See [RESOURCES_QUICK_START.md](RESOURCES_QUICK_START.md) for a fast implementation guide, and [RESOURCES_REFERENCE_MAP.md](RESOURCES_REFERENCE_MAP.md) for exact code patterns.
+**Important:** these are for reference only — do not import them directly. Study
+the patterns and route through a maintained upstream library instead. See
+[docs/RESOURCES_QUICK_START.md](docs/RESOURCES_QUICK_START.md) and
+[docs/RESOURCES_REFERENCE_MAP.md](docs/RESOURCES_REFERENCE_MAP.md).
 
 ## Contributing
 
-Contributions are welcome! Please:
-
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-model`)
-3. Implement your changes
-4. Add tests and documentation
-5. Run code quality checks (`black`, `ruff`, `mypy`)
-6. Submit a pull request
-
-**Model Contributions:** We only accept models that are "smol" (< 1B parameters). Please ensure your model:
-
-- Is properly quantized and optimized
-- Includes comprehensive tests
-- Has working examples
-- Follows the existing API patterns
+2. Create a feature branch (`git checkout -b feature/my-change`)
+3. Make your changes (add a runner entry for a new model — no bespoke forward pass)
+4. Add tests and update documentation
+5. Run `black`, `ruff`, and the relevant tests
+6. Ensure `smlx run --verify <alias>` passes for any new model
+7. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file.
 
 ## Acknowledgments
 
-- **Apple MLX Team** - For the excellent MLX framework
-- **HuggingFace** - For model hosting and tokenizers
-- **MLX Community** - For reference implementations in mlx-examples, mlx-lm, mlx-vlm
+- **Apple MLX Team** — for the MLX framework and the mlx-lm / mlx-vlm / mlx-whisper
+  / mlx-embeddings / mlx-audio libraries
+- **HuggingFace** — for model hosting, tokenizers, and `transformers`
+- **MLX Community** — for the reference implementations under `resources/`
 
 ## Citation
 
-If you use SMLX in your research or project, please cite:
-
 ```bibtex
-@software{smlx2024,
+@software{smlx,
   title = {SMLX: Small Models for Apple Silicon},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/yourusername/smlx}
+  author = {LayerDynamics},
+  url = {https://github.com/LayerDynamics/smlx}
 }
 ```
 

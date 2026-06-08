@@ -439,24 +439,14 @@ python -m smlx.bench.run vlm \
 
 **Real-time factor of 0.12 means the model processes 30 seconds of audio in ~3.6 seconds.**
 
-### TrOCR-small
+### OCR
 
-**Specifications:**
+OCR runs through **SmolVLM via mlx-vlm** (alias `ocr`), not a bespoke TrOCR model.
+Benchmark it as a vision-language model (see the SmolVLM rows above), or run:
 
-- Parameters: 60M
-- Architecture: Vision encoder + Text decoder
-- Image resolution: 384x384
-- Variants: Printed, Handwritten
-
-**Performance (M4 Pro, FP16):**
-
-| Metric                | Printed  | Handwritten |
-|-----------------------|----------|-------------|
-| Model size            | 240 MB   | 240 MB      |
-| Memory usage          | ~450 MB  | ~450 MB     |
-| Loading time          | 0.52 s   | 0.54 s      |
-| Images/sec            | 23.4     | 21.7        |
-| Latency per image     | 42.7 ms  | 46.1 ms     |
+```bash
+smlx run ocr --document scan.png
+```
 
 ### MiniLM
 

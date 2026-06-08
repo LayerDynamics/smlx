@@ -1342,7 +1342,7 @@ For complex answer formats, see `smlx/evals/math_vista.py:normalize_answer()` fo
 
 ### Planned Features
 
-1. **Audio Evaluations** - For Whisper, Orpheus, YAMNet
+1. **Audio Evaluations** - For Whisper (ASR), Kokoro (TTS), AST (audio classification)
    - Word Error Rate (WER) for speech recognition
    - Character Error Rate (CER) for transcription
    - Audio classification metrics
