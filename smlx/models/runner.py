@@ -170,6 +170,9 @@ def _write_cad(path_base: Path, payload: dict) -> tuple[str, str]:
     json_path.write_text(seq if isinstance(seq, str) else json.dumps(seq, indent=2, default=str))
     if py:
         path_base.with_suffix(".py").write_text(py)
+    summary = payload.get("summary")
+    if summary:
+        return str(json_path), f"{summary} + CadQuery .py"
     n = payload.get("n_commands", "?")
     return str(json_path), f"CAD sequence ({n} commands) + CadQuery .py"
 

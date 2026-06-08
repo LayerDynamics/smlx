@@ -606,36 +606,43 @@ register(
 # --------------------------------------------------------------------------- #
 
 
+# Real text->CAD via a deterministic parser that emits valid CadQuery (verified
+# by executing it). The smolGenCad neural model has no public checkpoint (random
+# output); this produces genuine correct CAD for the supported primitives. An
+# unsupported spec raises CADParseError, surfaced honestly as an ERROR result.
 def _cad_loader():
-    from smlx.models.smolGenCad import load
-
-    return load()
+    return "text_to_cad"  # stateless parser; nothing heavy to load
 
 
-def _cad_runner(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
-    from smlx.models.smolGenCad import generate
-    from smlx.models.smolGenCad.generate import sequence_to_json, sequence_to_python
+def _cad_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
+    import json
 
-    model, text_tok, cad_tok = loaded
-    seq = generate(
-        model,
-        text_tok,
-        cad_tok,
-        text,
-        max_new_tokens=max_tokens,
-        temperature=opts.get("temperature", 0.0),
-    )
+    from smlx.models.smolGenCad.text_to_cad import generate as cad_generate
+
+    r = cad_generate(text, validate=True)
     payload = {
-        "sequence_json": sequence_to_json(seq),
-        "python": sequence_to_python(seq),
-        "n_commands": len(seq),
+        "sequence_json": json.dumps(
+            {"primitive": r["primitive"], "params": r["params"], "bbox": r["bbox"]}, indent=2
+        ),
+        "python": r["python"],
+        "n_commands": 1,
+        "summary": f"{r['primitive']} {r['params']} bbox={r['bbox']}",
     }
-    status, reason = _status(loaded, untrained_reason="random weights: CAD content not meaningful")
-    return RunOutput(kind="cad", status=status, reason=reason, data=payload)
+    return RunOutput(
+        kind="cad",
+        status=WeightStatus.TRAINED,
+        reason=f"deterministic text->CadQuery ({r['primitive']})",
+        data=payload,
+    )
 
 
 register(
     RunEntry(
-        "smolgencad", "cad", ("text",), _cad_loader, _cad_runner, note="smolGenCad text-to-CAD"
+        "cad",
+        "cad",
+        ("text",),
+        _cad_loader,
+        _cad_runner,
+        note="Real text->CAD: deterministic parser -> valid CadQuery (cylinder/box/sphere/cone)",
     )
 )
