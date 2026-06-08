@@ -195,8 +195,123 @@ _CHECKS = {
 }
 
 
-def verify(model_ids: list[str] | None = None) -> tuple[list[CheckResult], bool]:
-    """Run the correctness gate. Returns (results, all_ok)."""
+def _cos(a, b) -> float:
+    import numpy as np
+
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+
+def _check_public_paths(fx) -> list[CheckResult]:
+    """Correctness checks for the OTHER public surfaces, beyond the runner registry.
+
+    The same fixtures and (cached) models are reused to assert that the legacy
+    ``load_model()`` API, the ``mlx_backend`` ASR/embeddings entrypoints, and the
+    server audio/embeddings route handlers each produce real, correct output (and
+    that ``load_model`` rejects removed aliases instead of returning noise).
+    """
+    import asyncio
+
+    import numpy as np
+
+    from . import mlx_backend
+    from .registry import is_model_implemented, load_model
+
+    results: list[CheckResult] = []
+
+    def record(name: str, modality: str, fn) -> None:
+        try:
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                ok, detail = fn()
+            results.append(CheckResult(name, modality, ok, detail))
+        except Exception as e:
+            results.append(CheckResult(name, modality, False, f"{type(e).__name__}: {e}"))
+
+    _emb_inputs = ["a cat sleeps on the mat", "a kitten naps on the rug", "stocks fell"]
+
+    def _embeddings_ok(vecs) -> tuple[bool, str]:
+        v = np.asarray(vecs)
+        para, unrel = _cos(v[0], v[1]), _cos(v[0], v[2])
+        return para > unrel + 0.1, f"paraphrase {para:.2f} > unrelated {unrel:.2f}"
+
+    # 1. Legacy load_model() public API -> real LM output.
+    def _load_model_lm():
+        bm = load_model("smollm2-135m")
+        out = mlx_backend.generate(
+            bm, "What is the capital of France? Answer in one word.", max_tokens=8
+        )
+        return "paris" in (out or "").lower(), (out or "").strip()[:40]
+
+    record("load_model", "language", _load_model_lm)
+
+    # 2. load_model is fail-closed: removed bespoke aliases report not-implemented
+    #    (never resolve to a noise-producing object). No download.
+    def _load_model_fail_closed():
+        removed = ["chatterbox", "orpheus-150m", "trocr-small", "yamnet", "smolgencad"]
+        leaked = [a for a in removed if is_model_implemented(a)]
+        return not leaked, ("removed aliases rejected" if not leaked else f"leaked: {leaked}")
+
+    record("load_model", "fail-closed", _load_model_fail_closed)
+
+    # 3. mlx_backend ASR entrypoint (mlx-whisper).
+    def _backend_asr():
+        txt = mlx_backend.transcribe(mlx_backend.load("whisper-tiny"), fx["speech"])
+        hit = len(_SPEECH_WORDS & set(_norm(txt).split()))
+        return hit >= 3, f"{hit}/6: {(txt or '').strip()[:40]}"
+
+    record("mlx_backend", "asr", _backend_asr)
+
+    # 4. mlx_backend embeddings entrypoint (mlx-embeddings).
+    def _backend_emb():
+        return _embeddings_ok(mlx_backend.embed(mlx_backend.load("minilm"), _emb_inputs))
+
+    record("mlx_backend", "embeddings", _backend_emb)
+
+    # 5. Server audio route handler transcribes correctly (mlx-whisper).
+    def _server_audio():
+        from pathlib import Path
+
+        from smlx.server.routes.audio import transcribe_audio
+
+        bm = mlx_backend.load("whisper-tiny")
+        audio_bytes = Path(fx["speech"]).read_bytes()
+        out = asyncio.run(
+            transcribe_audio(
+                bm=bm, audio_bytes=audio_bytes, language=None, prompt=None, temperature=0.0
+            )
+        )
+        txt = out.get("text", "")
+        hit = len(_SPEECH_WORDS & set(_norm(txt).split()))
+        return hit >= 3, f"{hit}/6: {(txt or '').strip()[:40]}"
+
+    record("server:audio", "asr", _server_audio)
+
+    # 6. Server embeddings route handler embeds correctly (mlx-embeddings).
+    def _server_emb():
+        from smlx.server.routes.embeddings import generate_embedding
+
+        bm = mlx_backend.load("minilm")
+        vecs = [asyncio.run(generate_embedding(bm=bm, text=t)) for t in _emb_inputs]
+        return _embeddings_ok(vecs)
+
+    record("server:embeddings", "embeddings", _server_emb)
+
+    return results
+
+
+def verify(
+    model_ids: list[str] | None = None, include_public_paths: bool = True
+) -> tuple[list[CheckResult], bool]:
+    """Run the correctness gate. Returns (results, all_ok).
+
+    A full run (no ``model_ids`` filter) also verifies the other public surfaces —
+    the legacy ``load_model`` API, the ``mlx_backend`` ASR/embeddings entrypoints,
+    and the server audio/embeddings route handlers — so one fail-closed gate covers
+    every way a caller can run a model. Pass ``include_public_paths=False`` to check
+    only the runner registry entries.
+    """
     from . import runner
 
     runner._ensure_registry()
@@ -226,5 +341,9 @@ def verify(model_ids: list[str] | None = None) -> tuple[list[CheckResult], bool]
                 results.append(
                     CheckResult(entry.key, entry.modality, False, f"{type(e).__name__}: {e}")
                 )
+        # A full run also covers the non-runner public surfaces (load_model,
+        # mlx_backend ASR/embeddings, server route handlers).
+        if include_public_paths and not model_ids:
+            results.extend(_check_public_paths(fx))
     all_ok = all(r.ok for r in results)
     return results, all_ok

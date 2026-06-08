@@ -625,7 +625,7 @@ def run(
 
         targets = [model] if model else None
         results, all_ok = runner_verify.verify(targets)
-        click.echo(f"{'MODEL':<18} {'MODALITY':<12} {'RESULT':<6} DETAIL")
+        click.echo(f"{'CHECK':<18} {'MODALITY':<12} {'RESULT':<6} DETAIL")
         click.echo("-" * 78)
         for r in results:
             click.echo(
@@ -633,7 +633,8 @@ def run(
             )
         click.echo("-" * 78)
         n_ok = sum(1 for r in results if r.ok)
-        click.echo(f"{n_ok}/{len(results)} models verified correct.")
+        scope = "models" if model else "checks (models + public API paths)"
+        click.echo(f"{n_ok}/{len(results)} {scope} verified correct.")
         if not all_ok:
             sys.exit(1)
         return
