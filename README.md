@@ -190,16 +190,21 @@ smlx generate smolvlm-256m "What's this?" -i photo.jpg -q 4bit
 
 ### Run any model (`smlx run`)
 
-Beyond the curated zoo, `smlx run` produces real output from **every** implemented
-model (all 17 — including TTS, OCR, VAD, audio-classification, CAD), each through
-its own pipeline, with an honest weight status (`TRAINED` / `TRAINED-WEIGHTS` /
-`PIPELINE-ONLY` / `SKIPPED`). Audio/CAD/json artifacts land in `data/output/`. See
-[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md#run-any-model-smlx-run).
+`smlx run` produces **real, correct** output across every modality (language, VLM,
+ASR, TTS, OCR, VAD, audio-classification, embeddings, CAD). There are **no bespoke
+hand-written forward passes** — each entry routes to a maintained upstream impl
+(mlx-lm / mlx-vlm / mlx-whisper / mlx-embeddings / mlx-audio / onnxruntime /
+transformers) or a real deterministic one, and a **fail-closed correctness gate**
+proves it. Audio/CAD/json artifacts land in `data/output/`. See
+[`docs/MODEL_STATUS.md`](docs/MODEL_STATUS.md#run-any-model-smlx-run--100-real-gate-verified).
 
 ```bash
-smlx run --list                                # every model + what input it needs
-smlx run smollm2-135m --text "What is MLX?"
-smlx run orpheus-150m --text "Hello world"     # -> data/output/orpheus-150m.wav
+smlx run --list                                # every runnable model + what it needs
+smlx run --verify                              # real per-modality correctness gate (14/14)
+smlx run smollm2-135m --text "What is the capital of France?"   # -> Paris
+smlx run kokoro --text "Hello world"           # real TTS -> data/output/kokoro.wav
+smlx run ocr --document scan.png               # real OCR (SmolVLM via mlx-vlm)
+smlx run cad  --text "cylinder radius 5mm height 10mm"          # real CadQuery
 smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
 ```
 
