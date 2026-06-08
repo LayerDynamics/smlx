@@ -18,9 +18,7 @@ Example:
 """
 
 import importlib
-from typing import Any, Dict, Optional, Tuple
-
-import mlx.nn as nn
+from typing import Any, Dict, Optional
 
 # Model registry mapping model patterns to loader modules
 MODEL_REGISTRY = {
@@ -135,7 +133,7 @@ def load_model(
     detect_prequantized: bool = True,
     verbose: bool = False,
     **kwargs,
-) -> Tuple[nn.Module, Any]:
+) -> Any:
     """
     Universal model loader - loads any supported model by ID or path.
 
@@ -190,67 +188,11 @@ def load_model(
         ...     model_type="smollm2-135m"
         ... )
     """
-    # Infer model type if not provided
-    if model_type is None:
-        model_type = infer_model_type(model_path_or_id)
-        if model_type is None:
-            raise ValueError(
-                f"Could not infer model type from: {model_path_or_id}\n"
-                f"Please specify model_type explicitly.\n"
-                f"Supported types: {', '.join(MODEL_REGISTRY.keys())}"
-            )
+    del model_type, quantization_config, detect_prequantized, verbose  # legacy, unused
+    from smlx.models import mlx_backend
 
-    # Get the loader module
-    loader_module = get_model_loader(model_type)
-
-    # Check for pre-quantized weights before loading
-    prequant_info = None
-    if detect_prequantized:
-        from smlx.utils.loading import detect_quantization, load_weights, resolve_model_path
-
-        try:
-            # Resolve model path and load weights to check for quantization
-            model_path = resolve_model_path(model_path_or_id)
-            weights = load_weights(model_path, lazy=True)
-            prequant_info = detect_quantization(weights)
-
-            if prequant_info and verbose:
-                print("✓ Detected pre-quantized model:")
-                print(f"  - Quantized layers: {prequant_info['num_quantized_layers']}")
-                print(f"  - Estimated bits: {prequant_info['estimated_bits']}")
-
-        except Exception:
-            # If detection fails, proceed without it
-            pass
-
-    # Load the model
-    model, tokenizer = loader_module.load(model_path_or_id, **kwargs)
-
-    # Handle quantization based on detection results
-    if prequant_info:
-        # Model is pre-quantized
-        if quantization is not None:
-            # User requested explicit quantization on pre-quantized model
-            if verbose:
-                print(
-                    f"Warning: Applying {quantization} to already quantized model. "
-                    f"This may reduce quality."
-                )
-            from smlx.utils.quantization import apply_quantization
-
-            quant_kwargs = quantization_config or {}
-            model = apply_quantization(model, method=quantization, verbose=verbose, **quant_kwargs)
-        elif verbose:
-            print("✓ Using pre-quantized weights")
-
-    elif quantization is not None:
-        # Model is not pre-quantized, apply requested quantization
-        from smlx.utils.quantization import apply_quantization
-
-        quant_kwargs = quantization_config or {}
-        model = apply_quantization(model, method=quantization, verbose=verbose, **quant_kwargs)
-
-    return model, tokenizer
+    lazy = bool(kwargs.pop("lazy", False))
+    return mlx_backend.load(model_path_or_id, quantize=quantization, lazy=lazy)
 
 
 def list_available_models() -> Dict[str, str]:
