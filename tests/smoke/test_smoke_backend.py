@@ -58,7 +58,8 @@ def test_backend_quantized_lm_stays_correct():
 def test_legacy_load_model_public_api_real_text():
     """The legacy load_model() public API resolves to a real BackendModel that
     produces coherent output (not a stub)."""
-    from smlx.models import load_model, mlx_backend as B
+    from smlx.models import load_model
+    from smlx.models import mlx_backend as B
 
     bm = load_model("smollm2-135m")
     out = B.generate(bm, "Name three primary colors.", max_tokens=32)
