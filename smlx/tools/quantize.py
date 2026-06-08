@@ -130,30 +130,11 @@ def get_model_info(model_path: str):
     print(f"Model Information: {model_path}")
     print("=" * 70)
 
-    # Try to determine model type
-    model_type = "unknown"
-    if "SmolLM2-135M" in model_path or "135M" in model_path:
-        model_type = "SmolLM2-135M"
-    elif "SmolLM2-360M" in model_path or "360M" in model_path:
-        model_type = "SmolLM2-360M"
-    elif "SmolVLM-256M" in model_path or "256M" in model_path:
-        model_type = "SmolVLM-256M"
-
-    print(f"\nDetected model type: {model_type}")
-
-    # Load model to get size information
+    # Load the model through the maintained backend to analyze its size.
     print("\nLoading model to analyze...")
-    if model_type.startswith("SmolLM2-135M"):
-        from smlx.models.SmolLM2_135M import load
+    from smlx.models import mlx_backend
 
-        model, tokenizer = load(model_path)
-    elif model_type.startswith("SmolLM2-360M"):
-        from smlx.models.SmolLM2_360M import load
-
-        model, tokenizer = load(model_path)
-    else:
-        print("Unknown model type - cannot load for analysis")
-        return
+    model = mlx_backend.load(model_path).model
 
     # Get size estimates
     actual_size = get_actual_model_size(model)
@@ -192,48 +173,31 @@ def quantize_model(
     print(f"Group size:  {group_size}")
     print(f"Output:      {output_path}")
 
-    # Determine model type
-    model_type = "unknown"
-    if "SmolLM2-135M" in model_path or "135M" in model_path:
-        model_type = "SmolLM2-135M"
-    elif "SmolLM2-360M" in model_path or "360M" in model_path:
-        model_type = "SmolLM2-360M"
-
-    if model_type == "unknown":
-        print(f"\nError: Unknown model type for {model_path}")
-        print("Currently supported: SmolLM2-135M, SmolLM2-360M")
-        return
-
-    # Load model
-    print(f"\nLoading {model_type}...")
+    # Load the full-precision model through the maintained backend, quantize it
+    # with the kept smlx.quant algorithm, then save the result in MLX format.
+    print(f"\nLoading {model_path}...")
     start_time = time.time()
 
-    if model_type == "SmolLM2-135M":
-        from smlx.models.SmolLM2_135M import load, save_model
+    from mlx_lm.utils import save_model as mlx_save_model
 
-        model, tokenizer = load(
-            model_path,
-            quantize=method,
-            quantization_config={"bits": bits, "group_size": group_size},
-        )
-    elif model_type == "SmolLM2-360M":
-        from smlx.models.SmolLM2_360M import load, save_model
+    from smlx.models import mlx_backend
+    from smlx.quant import quantize_model as quantize_weights
 
-        model, tokenizer = load(
-            model_path,
-            quantize=method,
-            quantization_config={"bits": bits, "group_size": group_size},
-        )
-
+    bm = mlx_backend.load(model_path)
+    model, tokenizer = bm.model, bm.processor
     load_time = time.time() - start_time
-    print(f"Loaded and quantized in {load_time:.2f}s")
+    print(f"Loaded in {load_time:.2f}s")
+
+    print(f"\nQuantizing ({bits}-bit, group_size={group_size})...")
+    model = quantize_weights(model, bits=bits, group_size=group_size)
 
     # Save model
     print(f"\nSaving quantized model to {output_path}...")
     save_start = time.time()
 
     output_path = Path(output_path)
-    save_model(model, output_path, config=model.args if hasattr(model, 'args') else None)
+    output_path.mkdir(parents=True, exist_ok=True)
+    mlx_save_model(output_path, model)
 
     # Save tokenizer
     print("Saving tokenizer...")
@@ -264,8 +228,8 @@ def quantize_model(
     print(f"Method:      {method}")
     print(f"Config:      {bits}-bit, group_size={group_size}")
     print("\nYou can now load this model with:")
-    print(f"  from smlx.models.{model_type.replace('-', '_')} import load")
-    print(f"  model, tokenizer = load('{output_path}')")
+    print("  from smlx.models import load_model")
+    print(f"  bm = load_model('{output_path}')")
 
 
 def main():

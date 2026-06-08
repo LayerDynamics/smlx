@@ -268,14 +268,19 @@ class RobustInferenceWrapper:
                     smart_cleanup(aggressive=True)
 
                 # Attempt generation
-                # Import here to avoid circular dependency
-                from smlx.models.SmolLM2_135M.generate import generate
+                from mlx_lm import generate as lm_generate
+                from mlx_lm.sample_utils import make_sampler
 
-                text = generate(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompt=prompt,
-                    **params,
+                sampler = make_sampler(
+                    temp=params.get("temperature", 0.0),
+                    top_p=params.get("top_p", 1.0),
+                )
+                text = lm_generate(
+                    model,
+                    tokenizer,
+                    prompt,
+                    max_tokens=params.get("max_tokens", 256),
+                    sampler=sampler,
                 )
 
                 # Success!

@@ -208,30 +208,20 @@ class LLMAgent(BaseAgent):
         Returns:
             Generated text
         """
-        # Import generation utilities
-        try:
-            from smlx.models.SmolLM2_135M import generate
-        except ImportError as e:
-            raise ImportError(
-                "Could not import generation utilities. Make sure SmolLM2 models are available."
-            ) from e
+        from mlx_lm import generate as lm_generate
+        from mlx_lm.sample_utils import make_sampler
 
-        # Merge kwargs with defaults
-        gen_kwargs = {
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-        }
-        gen_kwargs.update(kwargs)
+        max_tokens = kwargs.pop("max_tokens", self.max_tokens)
+        temperature = kwargs.pop("temperature", self.temperature)
+        sampler = make_sampler(temp=temperature)
 
-        # Generate response
-        response = generate(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            prompt=prompt,
-            **gen_kwargs,
+        return lm_generate(
+            self.model,
+            self.tokenizer,
+            prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
         )
-
-        return response
 
     def run(self, task: str, **kwargs) -> AgentResponse:
         """Execute the agent on a task.

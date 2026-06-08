@@ -283,92 +283,9 @@ def _generate_vlm(
     else:
         model_type_str = str(type(model).__name__).lower()
 
-    # Try SmolVLM models first
-    if "smolvlm" in model_type_str:
-        try:
-            from smlx.models.SmolVLM_256M.generate import generate
-
-            generated_text = generate(
-                model=model,
-                processor=processor,
-                prompt=prompt,
-                image=image,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=1.0,  # No top-p for benchmarks
-                verbose=False,
-            )
-            # Count tokens in output
-            num_tokens = len(processor.tokenizer.encode(generated_text))
-            return generated_text, num_tokens
-        except (ImportError, AttributeError):
-            pass
-
-    # Try nanoVLM
-    if "nanovlm" in model_type_str:
-        try:
-            from smlx.models.nanoVLM.generate import generate
-
-            generated_text = generate(
-                model=model,
-                processor=processor,
-                prompt=prompt,
-                image=image,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=1.0,
-                verbose=False,
-            )
-            num_tokens = len(processor.tokenizer.encode(generated_text))
-            return generated_text, num_tokens
-        except (ImportError, AttributeError):
-            pass
-
-    # Try Moondream2
-    if "moondream" in model_type_str:
-        try:
-            from smlx.models.Moondream2.generate import generate
-
-            generated_text = generate(
-                model=model,
-                processor=processor,
-                prompt=prompt,
-                image=image,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=1.0,
-                verbose=False,
-            )
-            num_tokens = len(processor.tokenizer.encode(generated_text))
-            return generated_text, num_tokens
-        except (ImportError, AttributeError):
-            pass
-
-    # Try TinyLLaVA
-    if "tinyllava" in model_type_str or "llava" in model_type_str:
-        try:
-            from smlx.models.TinyLLaVA.generate import generate
-
-            generated_text = generate(
-                model=model,
-                processor=processor,
-                prompt=prompt,
-                image=image,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=1.0,
-                verbose=False,
-            )
-            num_tokens = len(processor.tokenizer.encode(generated_text))
-            return generated_text, num_tokens
-        except (ImportError, AttributeError):
-            pass
-
-    # Generic path: any model exposing the documented simple benchmark interface
+    # Models exposing the simple benchmark interface
     #   generate(prompt: str, image, max_tokens: int, temperature: float) -> str
-    # can be benchmarked directly (custom models, test doubles, etc.). Tried
-    # before the SmolVLM-style inputs path so it doesn't depend on a specific
-    # processor implementation.
+    # are benchmarked directly.
     if hasattr(model, "generate"):
         try:
             generated_text = model.generate(
@@ -385,30 +302,16 @@ def _generate_vlm(
                 )
                 return generated_text, num_tokens
         except TypeError:
-            # Signature did not match the simple contract; fall through to the
-            # processor-driven path below.
             pass
 
-    # Fallback: build model inputs with a SmolVLM-style processor, then generate.
-    if hasattr(model, "generate"):
-        try:
-            # Prepare inputs
-            from smlx.models.SmolVLM_256M.generate import prepare_inputs
-
-            inputs = prepare_inputs(processor, prompt, image)
-            generated_text = model.generate(
-                **inputs, max_tokens=max_tokens, temperature=temperature
-            )
-            num_tokens = len(processor.tokenizer.encode(generated_text))
-            return generated_text, num_tokens
-        except Exception:
-            pass
-
-    # Last resort: raise error with helpful message
+    # mlx-vlm models generate through smlx.models.mlx_backend.generate, which
+    # carries the chat-template/config a raw (model, processor) pair lacks. Drive
+    # those through the runner/backend rather than this helper.
     raise NotImplementedError(
-        f"VLM generation not implemented for model type '{model_type_str}'. "
-        f"Supported models: SmolVLM-256M, SmolVLM-500M, nanoVLM, Moondream2, TinyLLaVA. "
-        f"Make sure the model's generate.py module is properly implemented."
+        f"This benchmark helper drives models exposing "
+        f"generate(prompt, image, max_tokens, temperature) -> str; "
+        f"'{model_type_str}' does not. Benchmark mlx-vlm models via "
+        f"smlx.models.mlx_backend.generate (or the smlx run VLM path)."
     )
 
 
