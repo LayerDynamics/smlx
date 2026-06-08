@@ -584,23 +584,31 @@ def models_verify(model, quantize, max_tokens, enforce_perf):
 )
 @click.option("--all", "run_all", is_flag=True, help="Run every model whose inputs you supply")
 @click.option("--list", "list_models", is_flag=True, help="List every runnable model")
+@click.option(
+    "--verify",
+    "verify_gate",
+    is_flag=True,
+    help="Run the fail-closed correctness gate over every model (or MODEL); non-zero on any failure",
+)
 @click.option("--out-dir", default="data/output", help="Where audio/CAD/json artifacts are written")
 @click.option("--max-tokens", "-t", type=int, default=64, help="Max tokens for generative models")
-def run(model, text, image, audio, document, run_all, list_models, out_dir, max_tokens):
+def run(
+    model, text, image, audio, document, run_all, list_models, verify_gate, out_dir, max_tokens
+):
     """Produce real output from any implemented model (or all of them).
 
-    Every model runs its own real inference pipeline; output artifacts (audio,
-    CAD, json) are written to --out-dir. Each line reports an honest weight
-    status: TRAINED / TRAINED-WEIGHTS (known gap) / PIPELINE-ONLY (random weights:
-    output happens but is not trained-quality) / NO-WEIGHTS.
+    Every model runs through a real upstream implementation; output artifacts
+    (audio, CAD, json) are written to --out-dir. `--verify` runs a real
+    per-modality correctness check and exits non-zero if any model fails.
 
     Examples:
 
         \b
         smlx run --list
+        smlx run --verify                              # fail-closed correctness gate
         smlx run smollm2-135m --text "What is MLX?"
-        smlx run orpheus-150m --text "Hello world"     # -> data/output/orpheus-150m.wav
-        smlx run trocr-small --document scan.png
+        smlx run kokoro --text "Hello world"           # -> data/output/kokoro.wav
+        smlx run ocr --document scan.png
         smlx run --all --text "Hi" -i cat.jpg -a clip.wav -d scan.png
     """
     from smlx.models import runner
@@ -610,6 +618,24 @@ def run(model, text, image, audio, document, run_all, list_models, out_dir, max_
         click.echo("-" * 78)
         for e in runner.list_entries():
             click.echo(f"{e.key:<20} {e.modality:<12} {', '.join(e.needs):<22} {e.note}")
+        return
+
+    if verify_gate:
+        from smlx.models import runner_verify
+
+        targets = [model] if model else None
+        results, all_ok = runner_verify.verify(targets)
+        click.echo(f"{'MODEL':<18} {'MODALITY':<12} {'RESULT':<6} DETAIL")
+        click.echo("-" * 78)
+        for r in results:
+            click.echo(
+                f"{r.model:<18} {r.modality:<12} {'PASS' if r.ok else 'FAIL':<6} {r.detail[:42]}"
+            )
+        click.echo("-" * 78)
+        n_ok = sum(1 for r in results if r.ok)
+        click.echo(f"{n_ok}/{len(results)} models verified correct.")
+        if not all_ok:
+            sys.exit(1)
         return
 
     inputs = {

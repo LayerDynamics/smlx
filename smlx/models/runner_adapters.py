@@ -68,12 +68,14 @@ for _key, _repo in _LM_BACKEND.items():
 # weights). Each alias maps to a real, mlx-vlm-loadable checkpoint, verified to
 # produce real output. moondream2's real arch isn't supported by mlx-vlm, so that
 # entry honestly runs Qwen2-VL (note says so) rather than emit gibberish.
+# moondream2 is QUARANTINED: real Moondream2 isn't supported by mlx-vlm, and the
+# Qwen2-VL-4bit substitute is degenerate on basic vision (answers "blue" for every
+# solid color) — it fails the correctness gate, so it is not wired here.
 _VLM_BACKEND = {
     "smolvlm-256m": ("smolvlm-256m", "SmolVLM-256M (mlx-vlm)"),
     "smolvlm-500m": ("smolvlm-500m", "SmolVLM-500M (mlx-vlm)"),
     "nanovlm": ("mlx-community/nanoLLaVA-1.5-4bit", "nanoLLaVA-1.5 (mlx-vlm)"),
     "tinyllava": ("qnguyen3/nanoLLaVA", "nanoLLaVA / TinyLLaVA-class (mlx-vlm)"),
-    "moondream2": ("qwen2-vl-2b", "Qwen2-VL-2B (mlx-vlm) — real Moondream2 unavailable in MLX"),
 }
 
 
