@@ -17,39 +17,18 @@ Example:
     ... )
 """
 
-import importlib
 from typing import Any, Dict, Optional
 
-# Model registry mapping model patterns to loader modules
-MODEL_REGISTRY = {
-    # Language Models
-    "smollm2-135m": "smlx.models.SmolLM2_135M",
-    "smollm2-360m": "smlx.models.SmolLM2_360M",
-    "smollm2": "smlx.models.SmolLM2_135M",  # Default to 135M
-    "chatterbox": "smlx.models.Chatterbox",
-    # Vision-Language Models
-    "smolvlm-256m": "smlx.models.SmolVLM_256M",
-    "smolvlm-500m": "smlx.models.SmolVLM_500M_Instruct",
-    "smolvlm": "smlx.models.SmolVLM_256M",  # Default to 256M
-    "moondream2": "smlx.models.Moondream2",
-    "tinyllava": "smlx.models.TinyLLaVA",
-    "nanovlm": "smlx.models.nanoVLM",
-    # Audio Models
-    "whisper-tiny": "smlx.models.Whisper_tiny",
-    "whisper": "smlx.models.Whisper_tiny",  # Default to tiny
-    "orpheus-150m": "smlx.models.Orpheus_150M",
-    "orpheus": "smlx.models.Orpheus_150M",
-    "yamnet": "smlx.models.YAMNet",
-    "silero-vad": "smlx.models.SileroVAD",
-    # Document/OCR Models
-    "trocr-small": "smlx.models.TrOCR_small",
-    "trocr": "smlx.models.TrOCR_small",
-    "donut-base": "smlx.models.Donut_base",
-    "donut": "smlx.models.Donut_base",
-    # Embedding Models
-    "minilm": "smlx.models.MiniLM",
-    "all-minilm-l6-v2": "smlx.models.all_MiniLM_L6_v2",
-}
+
+def _build_registry() -> Dict[str, str]:
+    """Map each runnable alias to its modality, sourced from the runner."""
+    from . import runner
+
+    return {e.key: e.modality for e in runner.list_entries()}
+
+
+# alias -> modality (language|vlm|asr|tts|ocr|embeddings|vad|audio_cls|cad)
+MODEL_REGISTRY: Dict[str, str] = _build_registry()
 
 
 def infer_model_type(model_path_or_id: str) -> Optional[str]:
@@ -90,39 +69,6 @@ def infer_model_type(model_path_or_id: str) -> Optional[str]:
             return model_type
 
     return None
-
-
-def get_model_loader(model_type: str):
-    """
-    Get the loader module for a given model type.
-
-    Args:
-        model_type: Model type key from MODEL_REGISTRY
-
-    Returns:
-        Module with load() function
-
-    Raises:
-        ImportError: If model module cannot be loaded
-        ValueError: If model type is unknown
-    """
-    if model_type not in MODEL_REGISTRY:
-        raise ValueError(
-            f"Unknown model type: {model_type}\nSupported types: {', '.join(MODEL_REGISTRY.keys())}"
-        )
-
-    module_path = MODEL_REGISTRY[model_type]
-
-    try:
-        module = importlib.import_module(module_path)
-        if not hasattr(module, "load"):
-            raise ImportError(f"Module {module_path} does not have a load() function")
-        return module
-    except ImportError as e:
-        raise ImportError(
-            f"Failed to import model module {module_path}: {e}\n"
-            f"The model may not be implemented yet."
-        )
 
 
 def load_model(
@@ -227,14 +173,7 @@ def is_model_implemented(model_type: str) -> bool:
         >>> is_model_implemented("unknown-model")
         False
     """
-    if model_type not in MODEL_REGISTRY:
-        return False
-
-    try:
-        get_model_loader(model_type)
-        return True
-    except ImportError:
-        return False
+    return model_type in MODEL_REGISTRY
 
 
 def get_model_info(model_type: str) -> Dict[str, Any]:
@@ -242,72 +181,35 @@ def get_model_info(model_type: str) -> Dict[str, Any]:
     Get information about a model type.
 
     Args:
-        model_type: Model type key from MODEL_REGISTRY
+        model_type: Alias key from MODEL_REGISTRY
 
     Returns:
-        Dictionary with model information:
-            - model_type: The model type key
-            - module_path: Python module path
-            - is_implemented: Whether model is implemented
-            - category: Model category (language, vision, audio, etc.)
+        Dictionary with model_type, modality, and is_implemented.
 
     Example:
-        >>> info = get_model_info("smollm2-135m")
-        >>> print(info["category"])
+        >>> get_model_info("smollm2-135m")["modality"]
         'language'
     """
     if model_type not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    # Determine category based on module path
-    module_path = MODEL_REGISTRY[model_type]
-
-    if "SmolLM" in module_path or "Chatterbox" in module_path:
-        category = "language"
-    elif "VLM" in module_path or "LLaVA" in module_path or "Moondream" in module_path:
-        category = "vision-language"
-    elif (
-        "Whisper" in module_path
-        or "Orpheus" in module_path
-        or "YAMNet" in module_path
-        or "VAD" in module_path
-    ):
-        category = "audio"
-    elif "TrOCR" in module_path or "Donut" in module_path:
-        category = "document"
-    elif "MiniLM" in module_path:
-        category = "embedding"
-    else:
-        category = "unknown"
-
     return {
         "model_type": model_type,
-        "module_path": module_path,
-        "is_implemented": is_model_implemented(model_type),
-        "category": category,
+        "modality": MODEL_REGISTRY[model_type],
+        "is_implemented": True,
     }
 
 
 def list_models_by_category() -> Dict[str, list]:
     """
-    List models grouped by category.
-
-    Returns:
-        Dictionary mapping categories to lists of model types
+    List models grouped by modality.
 
     Example:
         >>> models = list_models_by_category()
-        >>> print("Language models:", models["language"])
-        >>> print("Audio models:", models["audio"])
+        >>> models["language"]
+        ['smollm2-135m', 'smollm2-360m']
     """
-    categories = {}
-
-    for model_type in MODEL_REGISTRY.keys():
-        info = get_model_info(model_type)
-        category = info["category"]
-
-        if category not in categories:
-            categories[category] = []
-        categories[category].append(model_type)
-
+    categories: Dict[str, list] = {}
+    for model_type, modality in MODEL_REGISTRY.items():
+        categories.setdefault(modality, []).append(model_type)
     return categories
