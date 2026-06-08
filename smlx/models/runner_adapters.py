@@ -511,7 +511,7 @@ def _cad_loader():
 def _cad_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
     import json
 
-    from smlx.models.smolGenCad.text_to_cad import generate as cad_generate
+    from smlx.models.cad import generate as cad_generate
 
     r = cad_generate(text, validate=True)
     payload = {
