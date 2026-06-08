@@ -293,7 +293,9 @@ def _check_public_paths(fx) -> list[CheckResult]:
         from smlx.server.routes.embeddings import generate_embedding
 
         bm = mlx_backend.load("minilm")
-        vecs = [asyncio.run(generate_embedding(bm=bm, text=t)) for t in _emb_inputs]
+        async def _get_embeddings():
+            return await asyncio.gather(*(generate_embedding(bm=bm, text=t) for t in _emb_inputs))
+        vecs = asyncio.run(_get_embeddings())
         return _embeddings_ok(vecs)
 
     record("server:embeddings", "embeddings", _server_emb)
