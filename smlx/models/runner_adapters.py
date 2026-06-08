@@ -53,46 +53,33 @@ def _open_image(path: str):
 # --------------------------------------------------------------------------- #
 
 
-def _lm_loader(pkg: str):
+# Language models run through mlx-lm (correct upstream forward + chat templating),
+# never the bespoke SmolLM2 forward.
+_LM_BACKEND = {"smollm2-135m": "smollm2-135m", "smollm2-360m": "smollm2-360m"}
+
+
+def _make_backend_lm(repo: str):
     def _load():
-        import importlib
+        from smlx.models import mlx_backend
 
-        return importlib.import_module(f"smlx.models.{pkg}").load()
+        return mlx_backend.load(repo, backend=mlx_backend.Backend.MLX_LM)
 
-    return _load
+    def _run(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
+        from smlx.models import mlx_backend
 
-
-def _lm_runner(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
-    from smlx.models.SmolLM2_135M import generate  # shared generate signature
-
-    model, tokenizer = loaded
-    # Apply the instruct chat template so the model answers the prompt instead of
-    # immediately emitting <|im_end|> on a bare, un-templated string.
-    prompt = text
-    if getattr(tokenizer, "chat_template", None) is not None:
-        prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": text}], add_generation_prompt=True, tokenize=False
+        out = mlx_backend.generate(
+            loaded, text, max_tokens=max_tokens, temperature=opts.get("temperature", 0.0)
         )
-    out = generate(
-        model, tokenizer, prompt, max_tokens=max_tokens, temperature=opts.get("temperature", 0.0)
-    )
-    # Strip the chat-template end marker if the generator left it in the text.
-    out = (out or "").replace("<|im_end|>", "").strip()
-    status, reason = _status(loaded)
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-for _key, _pkg in (("smollm2-135m", "SmolLM2_135M"), ("smollm2-360m", "SmolLM2_360M")):
-    register(
-        RunEntry(
-            _key,
-            "language",
-            ("text",),
-            _lm_loader(_pkg),
-            _lm_runner,
-            note=f"{_pkg} text generation",
+        return RunOutput(
+            kind="text", status=WeightStatus.TRAINED, reason="mlx-lm", text=(out or "").strip()
         )
-    )
+
+    return _load, _run
+
+
+for _key, _repo in _LM_BACKEND.items():
+    _lload, _lrun = _make_backend_lm(_repo)
+    register(RunEntry(_key, "language", ("text",), _lload, _lrun, note=f"{_repo} (mlx-lm)"))
 
 
 # --------------------------------------------------------------------------- #
@@ -150,14 +137,27 @@ for _key, (_repo, _note) in _VLM_BACKEND.items():
 # --------------------------------------------------------------------------- #
 
 
-def _whisper_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
-    from smlx.models.Whisper_tiny import transcribe
+# ASR runs through mlx-whisper (Apple's maintained Whisper), never the bespoke
+# Whisper_tiny forward. mlx_whisper.transcribe loads+caches the model by repo, so
+# the loader just carries the repo id.
+_WHISPER_REPO = "mlx-community/whisper-tiny"
 
-    model, tokenizer = loaded
-    result = transcribe(audio, model, tokenizer, language=opts.get("language", "en"), verbose=None)
-    status, reason = _status(loaded)
+
+def _whisper_loader():
+    return _WHISPER_REPO
+
+
+def _whisper_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        audio, path_or_hf_repo=loaded, language=opts.get("language", "en")
+    )
     return RunOutput(
-        kind="text", status=status, reason=reason, text=(result.get("text") or "").strip()
+        kind="text",
+        status=WeightStatus.TRAINED,
+        reason="mlx-whisper",
+        text=(result.get("text") or "").strip(),
     )
 
 
@@ -166,9 +166,9 @@ register(
         "whisper-tiny",
         "asr",
         ("audio",),
-        _vlm_loader("Whisper_tiny"),
+        _whisper_loader,
         _whisper_runner,
-        note="Whisper speech-to-text",
+        note="Whisper speech-to-text (mlx-whisper)",
     )
 )
 
@@ -412,39 +412,40 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _make_embed_runner(pkg: str):
-    def _run(loaded, *, text, image=None, audio=None, document=None, **opts):
-        import importlib
-
-        encode = importlib.import_module(f"smlx.models.{pkg}").encode
-        model, tokenizer = loaded
-        vecs = encode(model, tokenizer, text)
-        status, reason = _status(loaded)
-        return RunOutput(kind="embeddings", status=status, reason=reason, data=vecs)
-
-    return _run
+# Embeddings run through mlx-embeddings (maintained MLX sentence-transformers),
+# never the bespoke MiniLM forward. Both aliases are the same real model.
+_EMBED_REPO = "mlx-community/all-MiniLM-L6-v2-4bit"
 
 
-register(
-    RunEntry(
-        "minilm",
-        "embeddings",
-        ("text",),
-        _vlm_loader("MiniLM"),
-        _make_embed_runner("MiniLM"),
-        note="MiniLM sentence embeddings",
+def _embed_loader():
+    from mlx_embeddings.utils import load
+
+    return load(_EMBED_REPO)  # (model, tokenizer)
+
+
+def _embed_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
+    import numpy as np
+
+    model, tokenizer = loaded
+    sentences = text if isinstance(text, list) else [text]
+    out = model(**tokenizer.batch_encode_plus(sentences, return_tensors="mlx", padding=True))
+    vecs = np.asarray(out.text_embeds if hasattr(out, "text_embeds") else out[0])
+    return RunOutput(
+        kind="embeddings", status=WeightStatus.TRAINED, reason="mlx-embeddings", data=vecs
     )
-)
-register(
-    RunEntry(
-        "all-minilm-l6-v2",
-        "embeddings",
-        ("text",),
-        _vlm_loader("all_MiniLM_L6_v2"),
-        _make_embed_runner("all_MiniLM_L6_v2"),
-        note="all-MiniLM-L6-v2 embeddings",
+
+
+for _ekey in ("minilm", "all-minilm-l6-v2"):
+    register(
+        RunEntry(
+            _ekey,
+            "embeddings",
+            ("text",),
+            _embed_loader,
+            _embed_runner,
+            note="all-MiniLM-L6-v2 sentence embeddings (mlx-embeddings)",
+        )
     )
-)
 
 
 # --------------------------------------------------------------------------- #
