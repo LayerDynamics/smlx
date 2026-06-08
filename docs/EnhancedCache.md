@@ -462,13 +462,7 @@ cache, breaker = make_cache_with_monitoring(
 
 ## Contributing
 
-Caching is **model-agnostic** — there are no per-model cache modules. The shared
-factories live in `smlx/utils/cache.py` (`make_cache`, `make_kv_caches`,
-`reset_cache`, `KVCache`, `RotatingKVCache`) and read the layer count from the
-model's own config (`model.args.num_hidden_layers`). Memory-pressure monitoring is
-provided by `smlx/kv_cache/kv_manager.py` (`KVCacheManager.create_*(...,
-enable_monitoring=True)`). To extend caching behaviour, work in those two modules —
-they apply to every curated model automatically.
+Caching is **model-agnostic** — there are no per-model cache modules. The shared factories live in smlx/utils/cache.py (make_cache, make_kv_caches, reset_cache, KVCache, RotatingKVCache) and expect the layer count as an integer (num_layers). Memory-pressure monitoring and advanced cache configurations (such as quantized or rotating caches) are provided by smlx/kv_cache/kv_manager.py (KVCacheManager.create_*(..., enable_monitoring=True)). To extend caching behaviour, work in those two modules — they apply to every curated model automatically.
 
 ## License
 
