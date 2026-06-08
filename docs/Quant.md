@@ -18,17 +18,18 @@ All implementations are built on MLX and optimized for Apple Silicon's unified m
 The simplest way to quantize a model is using the `apply_quantization()` utility:
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.utils.quantization import apply_quantization
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Apply 4-bit quantization (reduces size by ~75%)
 model = apply_quantization(model, method="4bit")
 
 # Generate with quantized model
-from smlx.models.SmolLM2_135M.generate import generate
+from smlx.utils.generation import generate
 output = generate(model, tokenizer, "Hello, world!", max_tokens=50)
 ```
 
@@ -95,12 +96,13 @@ For higher-quality quantization with minimal accuracy loss, use GPTQ or AWQ. The
 **GPTQ Quantization:**
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.utils.quantization import apply_quantization
 from smlx.quant.utils import load_calibration_data
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Load calibration data (cached automatically)
 calibration_data = load_calibration_data(tokenizer, num_samples=128)
@@ -127,13 +129,14 @@ model = apply_quantization(
 **AWQ Quantization:**
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.utils.quantization import apply_quantization
 from smlx.quant.awq import llama_awq
 from smlx.quant.utils import load_calibration_data
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Load calibration data
 calibration_data = load_calibration_data(tokenizer, num_samples=128)
@@ -183,20 +186,10 @@ The model loader automatically detects if a model has pre-quantized weights:
 ```python
 from smlx.models import load_model
 
-# Automatically detects and uses pre-quantized weights
-model, tokenizer = load_model(
-    "mlx-community/SmolLM2-135M-Instruct-4bit",
-    verbose=True
-)
-# ✓ Detected pre-quantized model:
-#   - Quantized layers: 52
-#   - Estimated bits: 4
-
-# Disable pre-quantization detection if needed
-model, tokenizer = load_model(
-    "mlx-community/SmolLM2-135M-Instruct-4bit",
-    detect_prequantized=False
-)
+# Automatically detects and uses pre-quantized weights.
+# load_model returns a BackendModel (.model / .processor / .quantized / ...).
+bm = load_model("mlx-community/SmolLM2-135M-Instruct-4bit")
+model, tokenizer = bm.model, bm.processor
 ```
 
 ## Supported Methods
@@ -797,8 +790,9 @@ w_quantized, scales = quantize_to_q4_0(weights)
 w_dequantized = dequantize_from_q4_0(w_quantized, scales, weights.shape)
 
 # Quantize entire model
-from smlx.models.SmolLM2_135M import load
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+from smlx.models import load
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 quantize_model_q4_0(model, block_size=32)  # In-place quantization
 
 # Estimate size reduction
@@ -989,8 +983,9 @@ w_dequant = dequantize_from_q4_k(
 )
 
 # Quantize entire model
-from smlx.models.SmolLM2_135M import load
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+from smlx.models import load
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 quantize_model_q4_k(model, block_size=256)
 
 # Estimate size
@@ -1116,9 +1111,10 @@ from smlx.quant.q4_k_m import (
     quantize_model_q4_k_m_ggml,
     estimate_q4_k_size,
 )
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Option 1: MLX Native mode (RECOMMENDED - TRUE memory savings)
 quantize_model_q4_k_m(model, use_mlx_native=True)
@@ -1227,8 +1223,9 @@ w_quantized, scales = quantize_to_mxfp8(weights)
 w_dequantized = dequantize_from_mxfp8(w_quantized, scales)
 
 # Quantize entire model
-from smlx.models.SmolLM2_135M import load
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+from smlx.models import load
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 quantize_model_mxfp8(model, inplace=True)  # Converts to nn.QuantizedLinear
 
 # Estimate size
@@ -1277,9 +1274,10 @@ Always benchmark both methods for your specific model and use case:
 
 ```python
 from smlx.quant import compare_mxfp8_vs_int8
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Compare MXFP8 vs INT8
 comparison = compare_mxfp8_vs_int8(
@@ -1409,10 +1407,11 @@ Intelligent quantization strategy selection based on hardware capabilities and u
 
 ```python
 from smlx.quant import autoquant, analyze_model, select_strategy, recommend_strategy
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Simple automatic quantization
 quantized_model = autoquant(
