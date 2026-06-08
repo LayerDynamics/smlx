@@ -2,6 +2,16 @@
 
 **SMLX Enhanced KV Cache** provides advanced memory management, quantization, and automatic OOM prevention for transformer models.
 
+> **API note:** the basic cache factory now lives in `smlx.utils.cache`
+> (`make_cache`, `make_kv_caches`, `reset_cache`, `KVCache`, `RotatingKVCache`).
+> The combined cache-plus-pressure-monitoring helper that earlier examples call
+> `make_cache_with_monitoring()` (returning a `(cache, breaker)` pair) was replaced
+> by `smlx.kv_cache.KVCacheManager` — create a monitored cache with
+> `KVCacheManager.create_auto(num_layers=..., model_size_gb=..., enable_monitoring=True)`
+> (also `create_standard` / `create_rotating` / `create_quantized`). The
+> `make_cache_with_monitoring(...)` snippets below are retained as a conceptual
+> reference for the monitoring behaviour; use the `KVCacheManager` factory in code.
+
 ## Overview
 
 The enhanced cache system builds on the standard KV cache implementation with:
@@ -15,24 +25,20 @@ The enhanced cache system builds on the standard KV cache implementation with:
 
 ## Supported Models
 
-Enhanced cache modules are available for:
-
-| Model | Module | Language Model | Layers |
-|-------|--------|----------------|--------|
-| SmolLM2-135M | `smlx.models.SmolLM2_135M.cache` | SmolLM2-135M | 30 |
-| SmolLM2-360M | `smlx.models.SmolLM2_360M.cache` | SmolLM2-360M | 32 |
-| Moondream2 | `smlx.models.Moondream2.cache` | Phi-1.5B | 24 |
-| TinyLLaVA | `smlx.models.TinyLLaVA.cache` | TinyLlama-1.1B | 22 |
-| SmolVLM-256M | `smlx.models.SmolVLM_256M.cache` | SmolLM2-135M | 30 |
-| SmolVLM-500M | `smlx.models.SmolVLM_500M_Instruct.cache` | SmolLM2-360M | 32 |
+Caching is **model-agnostic** — there are no longer per-model cache modules. The
+shared factories in `smlx.utils.cache` (`make_cache`, `make_kv_caches`) build a
+correct per-layer KV cache for any MLX model loaded through `smlx.models.load`, and
+`smlx.kv_cache.KVCacheManager` adds memory-pressure monitoring on top. The number
+of cache layers is read from the model's own config (`model.args.num_hidden_layers`),
+so the same code works for SmolLM2, SmolVLM, moondream3, and any other curated model.
 
 ## Quick Start
 
 ### Basic Usage (Automatic Selection)
 
 ```python
-from smlx.models.SmolLM2_135M import load, generate
-from smlx.models.SmolLM2_135M.cache import make_cache
+from smlx.models import load, generate
+from smlx.utils.cache import make_cache
 
 # Load model
 model, tokenizer = load()
@@ -56,7 +62,7 @@ response = generate(
 ### Quantized Cache (Memory Efficient)
 
 ```python
-from smlx.models.SmolLM2_135M.cache import make_cache
+from smlx.utils.cache import make_cache
 
 # Create 4-bit quantized cache (~4x memory reduction)
 cache = make_cache(
@@ -74,35 +80,29 @@ cache = make_cache(
 ### Memory Monitoring & OOM Prevention
 
 ```python
-from smlx.models.SmolLM2_135M.cache import make_cache_with_monitoring
+from smlx.utils.cache import make_cache
+from smlx.utils.generation import generate_step
 
-# Create cache with automatic monitoring
-cache, breaker = make_cache_with_monitoring(
-    model,
-    cache_type="auto",
-    target_memory_gb=32.0,
-    warning_threshold=0.8,  # Warn at 80% memory
-    critical_threshold=0.9  # Critical at 90% memory
-)
+# Standard per-layer KV cache. For built-in memory-pressure monitoring, create
+# the cache through smlx.kv_cache.KVCacheManager instead:
+#   from smlx.kv_cache import KVCacheManager
+#   cache = KVCacheManager.create_auto(
+#       num_layers=model.args.num_hidden_layers,
+#       model_size_gb=0.5,
+#       enable_monitoring=True,
+#   )
+cache = make_cache(model)
 
-# During generation, monitor and intervene automatically
-from smlx.models.SmolLM2_135M import generate_step
-
+# Generate against the cache
 for step, (token, _) in enumerate(generate_step(model, prompt_tokens, cache=cache)):
-    # Automatic memory monitoring
-    intervention = breaker.monitor_and_intervene(current_step=step)
-
-    if intervention:
-        print(f"Memory intervention: {intervention['action']}")
-        # Actions: 'reset_cache', 'gc_collect', 'reduce_batch', etc.
-
     # ... process token ...
+    pass
 ```
 
 ### Rotating Cache (Fixed Memory)
 
 ```python
-from smlx.models.SmolLM2_135M.cache import make_cache
+from smlx.utils.cache import make_cache
 
 # Create rotating cache (drops old tokens when full)
 cache = make_cache(
@@ -223,16 +223,17 @@ cache = list(manager)
 Enhanced cache works with VLM models' language components:
 
 ```python
-from smlx.models.SmolVLM_256M import load
-from smlx.models.SmolVLM_256M.cache import make_cache_with_monitoring
+from smlx.models import load
+from smlx.kv_cache import KVCacheManager
 
-model, processor = load()
+bm = load("smolvlm-256m")
+model, processor = bm.model, bm.processor
 
-# Create cache for language model
-cache, breaker = make_cache_with_monitoring(
-    model.language_model,  # Access language model
-    cache_type="auto",
-    target_memory_gb=32.0
+# Create a monitored cache for the VLM's language model (see the API note above).
+cache = KVCacheManager.create_auto(
+    num_layers=model.language_model.args.num_hidden_layers,
+    model_size_gb=0.5,
+    enable_monitoring=True,
 )
 
 # Use with generation (cache is automatically managed)
@@ -256,7 +257,7 @@ from smlx.utils.cache import make_cache
 cache = make_cache(num_layers=30, max_kv_size=2048)
 
 # New API - enhanced features
-from smlx.models.SmolLM2_135M.cache import make_cache
+from smlx.utils.cache import make_cache
 
 cache = make_cache(model, cache_type="quantized", quantization_bits=4)
 ```
@@ -435,7 +436,7 @@ cache = make_cache(num_layers=30)
 
 **After:**
 ```python
-from smlx.models.SmolLM2_135M.cache import make_cache
+from smlx.utils.cache import make_cache
 
 cache = make_cache(model, cache_type="auto")
 ```
