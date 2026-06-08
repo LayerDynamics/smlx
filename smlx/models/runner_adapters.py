@@ -5,47 +5,23 @@ Each :class:`~smlx.models.runner.RunEntry` here wires a model's *own real*
 loader/runner closures so ``smlx run --list`` (and importing this module) does not
 pull every model's heavy dependencies.
 
-Weight status is derived at runtime from a real ``model.weights_loaded`` signal
-where the loader exposes one (Orpheus, Chatterbox, Donut, SileroVAD, smolGenCad);
-models that load a real public checkpoint report ``TRAINED``; TrOCR reports a
-``TRAINED-WEIGHTS`` gap (decoder MLP params absent from the checkpoint, verified —
-output is repetitive). Nothing is hardcoded to claim quality it doesn't have.
+Every registered entry routes to a maintained upstream implementation (mlx-lm,
+mlx-vlm, mlx-whisper, mlx-embeddings, mlx-audio, onnxruntime, transformers) or a
+real deterministic implementation — there are **no bespoke hand-written forward
+passes** in any path, so every entry reports ``TRAINED``. The bespoke SMLX impls
+that mishandled real weights (Orpheus/Chatterbox TTS, TrOCR/Donut OCR, YAMNet
+audio-cls, the untrained smolGenCad) are **quarantined** — not wired here — and
+documented in ``docs/MODEL_STATUS.md``.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from .runner import RunEntry, RunOutput, WeightStatus, register
 
-
-def _model_of(loaded: Any) -> Any:
-    """The nn.Module from a load() result that may be a tuple (model, ...)."""
-    if isinstance(loaded, tuple):
-        return loaded[0]
-    return loaded
-
-
-def _status(
-    loaded: Any,
-    *,
-    gap: bool = False,
-    gap_reason: str = "",
-    untrained_reason: str = "random weights: output is structural, not trained",
-) -> tuple:
-    """Map the model's real weights_loaded signal to (WeightStatus, reason)."""
-    wl = getattr(_model_of(loaded), "weights_loaded", None)
-    if wl is False:
-        return WeightStatus.PIPELINE_ONLY, untrained_reason
-    if gap:
-        return WeightStatus.TRAINED_GAP, gap_reason
-    return WeightStatus.TRAINED, ""
-
-
-def _open_image(path: str):
-    from PIL import Image
-
-    return Image.open(path).convert("RGB")
+# All runner entries now route to real upstream impls (mlx-lm/mlx-vlm/mlx-whisper/
+# mlx-embeddings/mlx-audio/onnxruntime/transformers) or a real deterministic
+# implementation, so every entry reports WeightStatus.TRAINED. The old
+# weights_loaded-signal helper is gone with the bespoke adapters it served.
 
 
 # --------------------------------------------------------------------------- #
@@ -53,46 +29,33 @@ def _open_image(path: str):
 # --------------------------------------------------------------------------- #
 
 
-def _lm_loader(pkg: str):
+# Language models run through mlx-lm (correct upstream forward + chat templating),
+# never the bespoke SmolLM2 forward.
+_LM_BACKEND = {"smollm2-135m": "smollm2-135m", "smollm2-360m": "smollm2-360m"}
+
+
+def _make_backend_lm(repo: str):
     def _load():
-        import importlib
+        from smlx.models import mlx_backend
 
-        return importlib.import_module(f"smlx.models.{pkg}").load()
+        return mlx_backend.load(repo, backend=mlx_backend.Backend.MLX_LM)
 
-    return _load
+    def _run(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
+        from smlx.models import mlx_backend
 
-
-def _lm_runner(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
-    from smlx.models.SmolLM2_135M import generate  # shared generate signature
-
-    model, tokenizer = loaded
-    # Apply the instruct chat template so the model answers the prompt instead of
-    # immediately emitting <|im_end|> on a bare, un-templated string.
-    prompt = text
-    if getattr(tokenizer, "chat_template", None) is not None:
-        prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": text}], add_generation_prompt=True, tokenize=False
+        out = mlx_backend.generate(
+            loaded, text, max_tokens=max_tokens, temperature=opts.get("temperature", 0.0)
         )
-    out = generate(
-        model, tokenizer, prompt, max_tokens=max_tokens, temperature=opts.get("temperature", 0.0)
-    )
-    # Strip the chat-template end marker if the generator left it in the text.
-    out = (out or "").replace("<|im_end|>", "").strip()
-    status, reason = _status(loaded)
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-for _key, _pkg in (("smollm2-135m", "SmolLM2_135M"), ("smollm2-360m", "SmolLM2_360M")):
-    register(
-        RunEntry(
-            _key,
-            "language",
-            ("text",),
-            _lm_loader(_pkg),
-            _lm_runner,
-            note=f"{_pkg} text generation",
+        return RunOutput(
+            kind="text", status=WeightStatus.TRAINED, reason="mlx-lm", text=(out or "").strip()
         )
-    )
+
+    return _load, _run
+
+
+for _key, _repo in _LM_BACKEND.items():
+    _lload, _lrun = _make_backend_lm(_repo)
+    register(RunEntry(_key, "language", ("text",), _lload, _lrun, note=f"{_repo} (mlx-lm)"))
 
 
 # --------------------------------------------------------------------------- #
@@ -100,26 +63,19 @@ for _key, _pkg in (("smollm2-135m", "SmolLM2_135M"), ("smollm2-360m", "SmolLM2_3
 # --------------------------------------------------------------------------- #
 
 
-def _vlm_loader(pkg: str):
-    def _load():
-        import importlib
-
-        return importlib.import_module(f"smlx.models.{pkg}").load()
-
-    return _load
-
-
 # Every VLM entry runs through the real mlx-vlm backend (correct upstream
 # forward + real weights), NOT the bespoke SMLX VLM code (which mangles even real
 # weights). Each alias maps to a real, mlx-vlm-loadable checkpoint, verified to
 # produce real output. moondream2's real arch isn't supported by mlx-vlm, so that
 # entry honestly runs Qwen2-VL (note says so) rather than emit gibberish.
+# moondream2 is QUARANTINED: real Moondream2 isn't supported by mlx-vlm, and the
+# Qwen2-VL-4bit substitute is degenerate on basic vision (answers "blue" for every
+# solid color) — it fails the correctness gate, so it is not wired here.
 _VLM_BACKEND = {
     "smolvlm-256m": ("smolvlm-256m", "SmolVLM-256M (mlx-vlm)"),
     "smolvlm-500m": ("smolvlm-500m", "SmolVLM-500M (mlx-vlm)"),
     "nanovlm": ("mlx-community/nanoLLaVA-1.5-4bit", "nanoLLaVA-1.5 (mlx-vlm)"),
     "tinyllava": ("qnguyen3/nanoLLaVA", "nanoLLaVA / TinyLLaVA-class (mlx-vlm)"),
-    "moondream2": ("qwen2-vl-2b", "Qwen2-VL-2B (mlx-vlm) — real Moondream2 unavailable in MLX"),
 }
 
 
@@ -150,14 +106,27 @@ for _key, (_repo, _note) in _VLM_BACKEND.items():
 # --------------------------------------------------------------------------- #
 
 
-def _whisper_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
-    from smlx.models.Whisper_tiny import transcribe
+# ASR runs through mlx-whisper (Apple's maintained Whisper), never the bespoke
+# Whisper_tiny forward. mlx_whisper.transcribe loads+caches the model by repo, so
+# the loader just carries the repo id.
+_WHISPER_REPO = "mlx-community/whisper-tiny"
 
-    model, tokenizer = loaded
-    result = transcribe(audio, model, tokenizer, language=opts.get("language", "en"), verbose=None)
-    status, reason = _status(loaded)
+
+def _whisper_loader():
+    return _WHISPER_REPO
+
+
+def _whisper_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        audio, path_or_hf_repo=loaded, language=opts.get("language", "en")
+    )
     return RunOutput(
-        kind="text", status=status, reason=reason, text=(result.get("text") or "").strip()
+        kind="text",
+        status=WeightStatus.TRAINED,
+        reason="mlx-whisper",
+        text=(result.get("text") or "").strip(),
     )
 
 
@@ -166,9 +135,9 @@ register(
         "whisper-tiny",
         "asr",
         ("audio",),
-        _vlm_loader("Whisper_tiny"),
+        _whisper_loader,
         _whisper_runner,
-        note="Whisper speech-to-text",
+        note="Whisper speech-to-text (mlx-whisper)",
     )
 )
 
@@ -178,39 +147,9 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _make_tts_runner(pkg: str, sample_rate: int, untrained_reason: str):
-    def _run(loaded, *, text, image=None, audio=None, document=None, **opts):
-        import importlib
-
-        syn = importlib.import_module(f"smlx.models.{pkg}").synthesize
-        model, processor = loaded
-        waveform = syn(model, processor, text, sample_rate=sample_rate)
-        status, reason = _status(loaded, untrained_reason=untrained_reason)
-        return RunOutput(kind="audio", status=status, reason=reason, audio=(waveform, sample_rate))
-
-    return _run
-
-
-register(
-    RunEntry(
-        "orpheus-150m",
-        "tts",
-        ("text",),
-        _vlm_loader("Orpheus_150M"),
-        _make_tts_runner("Orpheus_150M", 24000, "random weights: noise, not speech"),
-        note="Orpheus text-to-speech",
-    )
-)
-register(
-    RunEntry(
-        "chatterbox",
-        "tts",
-        ("text",),
-        _vlm_loader("Chatterbox"),
-        _make_tts_runner("Chatterbox", 24000, "random weights: noise, not speech"),
-        note="Chatterbox text-to-speech",
-    )
-)
+# QUARANTINED: the bespoke Orpheus_150M / Chatterbox TTS impls have no public
+# checkpoint and emit noise. They are NOT wired into the runner — `kokoro` is the
+# real TTS. See docs/MODEL_STATUS.md "Quarantined".
 
 
 # Real, trained-weights TTS via mlx-audio's Kokoro-82M. Unlike the SMLX
@@ -355,56 +294,11 @@ register(
 )
 
 
-def _trocr_loader():
-    from smlx.models.TrOCR_small import load
-
-    return load("printed")
-
-
-def _trocr_runner(loaded, *, text=None, image=None, audio=None, document, **opts):
-    from smlx.models.TrOCR_small import recognize
-
-    model, processor = loaded
-    out = recognize(model, processor, document)
-    # TrOCR loads real microsoft/trocr-small-printed weights but the decoder MLP
-    # params are absent from the checkpoint (verified ~75 missing) -> repetitive.
-    status, reason = _status(
-        loaded, gap=True, gap_reason="decoder MLP params absent from checkpoint -> repetitive"
-    )
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-register(
-    RunEntry(
-        "trocr-small",
-        "ocr",
-        ("document",),
-        _trocr_loader,
-        _trocr_runner,
-        note="TrOCR printed-text OCR",
-    )
-)
-
-
-def _donut_runner(loaded, *, text=None, image=None, audio=None, document, **opts):
-    from smlx.models.Donut_base import generate
-
-    model, processor = loaded
-    out = generate(model, processor, document, prompt=opts.get("prompt", ""))
-    status, reason = _status(loaded)
-    return RunOutput(kind="text", status=status, reason=reason, text=out)
-
-
-register(
-    RunEntry(
-        "donut-base",
-        "ocr",
-        ("document",),
-        _vlm_loader("Donut_base"),
-        _donut_runner,
-        note="Donut document understanding",
-    )
-)
+# QUARANTINED: the bespoke TrOCR_small / Donut_base impls diverge architecturally
+# from real TrOCR/BART (extra layers with no checkpoint source, residual encoder
+# bugs) and produce gibberish even with real weights. They are NOT wired into the
+# runner — the `ocr` entry above (SmolVLM via mlx-vlm) is the real OCR path.
+# See docs/MODEL_STATUS.md "Quarantined".
 
 
 # --------------------------------------------------------------------------- #
@@ -412,39 +306,40 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _make_embed_runner(pkg: str):
-    def _run(loaded, *, text, image=None, audio=None, document=None, **opts):
-        import importlib
-
-        encode = importlib.import_module(f"smlx.models.{pkg}").encode
-        model, tokenizer = loaded
-        vecs = encode(model, tokenizer, text)
-        status, reason = _status(loaded)
-        return RunOutput(kind="embeddings", status=status, reason=reason, data=vecs)
-
-    return _run
+# Embeddings run through mlx-embeddings (maintained MLX sentence-transformers),
+# never the bespoke MiniLM forward. Both aliases are the same real model.
+_EMBED_REPO = "mlx-community/all-MiniLM-L6-v2-4bit"
 
 
-register(
-    RunEntry(
-        "minilm",
-        "embeddings",
-        ("text",),
-        _vlm_loader("MiniLM"),
-        _make_embed_runner("MiniLM"),
-        note="MiniLM sentence embeddings",
+def _embed_loader():
+    from mlx_embeddings.utils import load
+
+    return load(_EMBED_REPO)  # (model, tokenizer)
+
+
+def _embed_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
+    import numpy as np
+
+    model, tokenizer = loaded
+    sentences = text if isinstance(text, list) else [text]
+    out = model(**tokenizer.batch_encode_plus(sentences, return_tensors="mlx", padding=True))
+    vecs = np.asarray(out.text_embeds if hasattr(out, "text_embeds") else out[0])
+    return RunOutput(
+        kind="embeddings", status=WeightStatus.TRAINED, reason="mlx-embeddings", data=vecs
     )
-)
-register(
-    RunEntry(
-        "all-minilm-l6-v2",
-        "embeddings",
-        ("text",),
-        _vlm_loader("all_MiniLM_L6_v2"),
-        _make_embed_runner("all_MiniLM_L6_v2"),
-        note="all-MiniLM-L6-v2 embeddings",
+
+
+for _ekey in ("minilm", "all-minilm-l6-v2"):
+    register(
+        RunEntry(
+            _ekey,
+            "embeddings",
+            ("text",),
+            _embed_loader,
+            _embed_runner,
+            note="all-MiniLM-L6-v2 sentence embeddings (mlx-embeddings)",
+        )
     )
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -552,36 +447,50 @@ register(
 # --------------------------------------------------------------------------- #
 
 
-def _yamnet_loader():
-    from smlx.models.YAMNet import load
+# Real audio-event classification via the maintained AST AudioSet model
+# (transformers). The bespoke YAMNet's log-mel front-end didn't match its weights
+# (classified speech as "Timpani"); AST classifies speech as "Speech" with high
+# confidence. The YAMNet package is quarantined (not wired here).
+_AST_REPO = "MIT/ast-finetuned-audioset-10-10-0.4593"
 
-    return load()
+
+def _ast_loader():
+    from transformers import ASTForAudioClassification, AutoFeatureExtractor
+
+    fe = AutoFeatureExtractor.from_pretrained(_AST_REPO)
+    model = ASTForAudioClassification.from_pretrained(_AST_REPO).eval()
+    return (model, fe)
 
 
-def _yamnet_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
-    from smlx.models.YAMNet import classify
+def _ast_runner(loaded, *, text=None, image=None, audio, document=None, **opts):
+    import torch
 
-    preds = classify(loaded, audio, top_k=opts.get("top_k", 5))
-    payload = [{"label": p.label, "score": float(p.score)} for p in preds]
-    # Real weights load and the (now-fixed) MobileNet forward runs end to end, but
-    # the bespoke log-mel feature extraction does not yet match YAMNet's expected
-    # input, so the predicted labels are not yet reliable. Honest gap, not random.
+    model, fe = loaded
+    arr, sr = _load_audio_16k(audio)  # reuse the VAD helper (16k mono float)
+    inputs = fe(arr, sampling_rate=16000, return_tensors="pt")
+    with torch.no_grad():
+        probs = torch.softmax(model(**inputs).logits, dim=-1)[0]
+    top = torch.topk(probs, int(opts.get("top_k", 5)))
+    payload = [
+        {"label": model.config.id2label[int(i)], "score": round(float(p), 4)}
+        for p, i in zip(top.values, top.indices)
+    ]
     return RunOutput(
         kind="labels",
-        status=WeightStatus.TRAINED_GAP,
-        reason="real weights + forward; log-mel feature extraction mismatch -> labels unreliable",
+        status=WeightStatus.TRAINED,
+        reason="AST AudioSet (transformers)",
         data=payload,
     )
 
 
 register(
     RunEntry(
-        "yamnet",
+        "ast",
         "audio_cls",
         ("audio",),
-        _yamnet_loader,
-        _yamnet_runner,
-        note="YAMNet audio-event classification (real weights; feature-extraction gap)",
+        _ast_loader,
+        _ast_runner,
+        note="AST AudioSet classifier (transformers) — real audio-event labels",
     )
 )
 
@@ -591,36 +500,43 @@ register(
 # --------------------------------------------------------------------------- #
 
 
+# Real text->CAD via a deterministic parser that emits valid CadQuery (verified
+# by executing it). The smolGenCad neural model has no public checkpoint (random
+# output); this produces genuine correct CAD for the supported primitives. An
+# unsupported spec raises CADParseError, surfaced honestly as an ERROR result.
 def _cad_loader():
-    from smlx.models.smolGenCad import load
-
-    return load()
+    return "text_to_cad"  # stateless parser; nothing heavy to load
 
 
-def _cad_runner(loaded, *, text, image=None, audio=None, document=None, max_tokens=64, **opts):
-    from smlx.models.smolGenCad import generate
-    from smlx.models.smolGenCad.generate import sequence_to_json, sequence_to_python
+def _cad_runner(loaded, *, text, image=None, audio=None, document=None, **opts):
+    import json
 
-    model, text_tok, cad_tok = loaded
-    seq = generate(
-        model,
-        text_tok,
-        cad_tok,
-        text,
-        max_new_tokens=max_tokens,
-        temperature=opts.get("temperature", 0.0),
-    )
+    from smlx.models.smolGenCad.text_to_cad import generate as cad_generate
+
+    r = cad_generate(text, validate=True)
     payload = {
-        "sequence_json": sequence_to_json(seq),
-        "python": sequence_to_python(seq),
-        "n_commands": len(seq),
+        "sequence_json": json.dumps(
+            {"primitive": r["primitive"], "params": r["params"], "bbox": r["bbox"]}, indent=2
+        ),
+        "python": r["python"],
+        "n_commands": 1,
+        "summary": f"{r['primitive']} {r['params']} bbox={r['bbox']}",
     }
-    status, reason = _status(loaded, untrained_reason="random weights: CAD content not meaningful")
-    return RunOutput(kind="cad", status=status, reason=reason, data=payload)
+    return RunOutput(
+        kind="cad",
+        status=WeightStatus.TRAINED,
+        reason=f"deterministic text->CadQuery ({r['primitive']})",
+        data=payload,
+    )
 
 
 register(
     RunEntry(
-        "smolgencad", "cad", ("text",), _cad_loader, _cad_runner, note="smolGenCad text-to-CAD"
+        "cad",
+        "cad",
+        ("text",),
+        _cad_loader,
+        _cad_runner,
+        note="Real text->CAD: deterministic parser -> valid CadQuery (cylinder/box/sphere/cone)",
     )
 )
