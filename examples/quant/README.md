@@ -148,11 +148,12 @@ python comparison_example.py
 ## Quick Start
 
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import quantize_model_q4_k_m, quantize_gptq, quantize_awq, apply_lora
 
 # Load model
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Option 1: Q4_K_M (RECOMMENDED - MLX-native mixed-precision) 🆕
 quantize_model_q4_k_m(model)  # ~4.8 bpw, true memory savings

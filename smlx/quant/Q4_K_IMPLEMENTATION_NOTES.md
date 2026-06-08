@@ -33,10 +33,11 @@ We've successfully implemented **hybrid Q4_K/Q4_K_M quantization** for SMLX with
 
 **Usage:**
 ```python
-from smlx.models.SmolLM2_135M import load
+from smlx.models import load
 from smlx.quant import quantize_model_mixed
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
+bm = load("smollm2-135m")
+model, tokenizer = bm.model, bm.processor
 
 # Recommended: Q4_K_M-style mixed precision
 quantize_model_mixed(model, style="q4_k_m")
