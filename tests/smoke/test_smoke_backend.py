@@ -53,3 +53,13 @@ def test_backend_quantized_lm_stays_correct():
     out = B.generate(lm, "What is the capital of France?", max_tokens=24)
     A.assert_text_coherent(out, context="backend 4bit")
     A.assert_contains_any(out, ["paris"], context="backend 4bit answer")
+
+
+def test_legacy_load_model_public_api_real_text():
+    """The legacy load_model() public API resolves to a real BackendModel that
+    produces coherent output (not a stub)."""
+    from smlx.models import load_model, mlx_backend as B
+
+    bm = load_model("smollm2-135m")
+    out = B.generate(bm, "Name three primary colors.", max_tokens=32)
+    A.assert_text_coherent(out, context="legacy load_model")

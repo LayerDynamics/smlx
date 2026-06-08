@@ -157,3 +157,34 @@ def test_base_dataset_protocol_declares_process():
     from smlx.data.datasets import BaseDataset
 
     assert hasattr(BaseDataset, "process")
+
+
+# ---------------------------------------------------------------------------
+# #8 — public model registry exposes only verified aliases, no garbage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_public_registry_has_only_verified_aliases():
+    """After the bespoke packages were removed, the legacy load_model/MODEL_REGISTRY
+    public API exposes only the runner-verified aliases. The removed models report
+    not-implemented instead of resolving to a noise-producing object."""
+    from smlx.models import MODEL_REGISTRY, is_model_implemented
+
+    # Real entries are present and sourced from the runner.
+    assert is_model_implemented("smollm2-135m")
+    assert is_model_implemented("whisper-tiny")
+    assert is_model_implemented("minilm")
+
+    # Removed bespoke models are not implemented (fail-closed, not garbage).
+    for gone in (
+        "orpheus-150m",
+        "chatterbox",
+        "trocr-small",
+        "donut-base",
+        "yamnet",
+        "smolgencad",
+        "whisper_tiny",
+    ):
+        assert not is_model_implemented(gone), gone
+        assert gone not in MODEL_REGISTRY, gone
