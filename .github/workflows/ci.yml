@@ -30,9 +30,11 @@ jobs:
     env:
       CORE: >-
         smlx/models/mlx_backend.py
+        smlx/models/runner_verify.py
         smlx/config/inclusion_policy.py
         smlx/main.py
         tests/smoke/
+        tests/models/test_gate_public_paths.py
         tests/test_inclusion_policy.py
         tests/test_packaging.py
     steps:
@@ -72,9 +74,10 @@ jobs:
         env:
           KMP_DUPLICATE_LIB_OK: "TRUE"
         run: |
-          python -m pytest -q \
+          python -m pytest -q -m "not requires_model" \
             tests/test_inclusion_policy.py \
-            tests/test_packaging.py
+            tests/test_packaging.py \
+            tests/models/test_gate_public_paths.py
 
   # ---------------------------------------------------------------------------
   # Model verify + perf gate — heavy (downloads the multi-GB curated zoo).
@@ -97,6 +100,11 @@ jobs:
           python-version: "3.11"
       - name: Install package
         run: pip install -e .
+      - name: Verify all public paths (runner + load_model + mlx_backend + server routes)
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: smlx run --verify
       - name: Verify the curated zoo (real output + perf floor)
         env:
           KMP_DUPLICATE_LIB_OK: "TRUE"
