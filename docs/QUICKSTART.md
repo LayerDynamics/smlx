@@ -461,10 +461,9 @@ python -m smlx.tools.download_data --model mlx-community/SmolLM2-135M-Instruct -
 
 ```python
 # Use quantization to reduce memory usage
-from smlx.quant import quantize_model
+from smlx.models import load
 
-model, tokenizer = load("mlx-community/SmolLM2-135M-Instruct")
-model = quantize_model(model, bits=4, group_size=64)  # 75% memory reduction
+m = load("smollm2-135m", quantize="4bit")  # 75% memory reduction at load time
 ```
 
 ### Issue: Slow inference
